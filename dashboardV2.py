@@ -14,7 +14,7 @@ import streamlit as st
 # PATH TO MASTER JSON
 # ---------------------------------------------------------
 
-MASTER_JSON = Path(r".\master.json")
+MASTER_JSON = Path(r"./master.json")
 
 # ---------------------------------------------------------
 # SENTIMENT LABEL CLEANUP
@@ -939,4 +939,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
