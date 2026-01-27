@@ -935,9 +935,13 @@ def main():
 
     elif page == "Search":
         render_search_page(df_sent, df_articles)
+    # Safety: ensure topic_bucket exists
+    if "topic_bucket" not in df_sent.columns:
+        df_sent, df_topics, bucket_sizes = apply_topic_buckets(df_sent, df_topics)
 
 
 if __name__ == "__main__":
     main()
+
 
 
