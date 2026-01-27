@@ -1,0 +1,3 @@
+pip install python-docx nltk transformers torch pandas sentence-transformers scikit-learn keybert matplotlib seaborn streamlit altair
+python -m nltk.downloader punkt
+python -m nltk.downloader punkt_tab
