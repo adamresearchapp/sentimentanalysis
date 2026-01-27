@@ -440,10 +440,14 @@ def topic_drift_heatmap(df_sent: pd.DataFrame):
 
 
 def compute_topic_purity(df_sent: pd.DataFrame) -> pd.DataFrame:
+    # Defensive: ensure dataframe and column exist
+    if df_sent is None or df_sent.empty:
+        return pd.DataFrame()
     if "topic_bucket" not in df_sent.columns:
         return pd.DataFrame()
 
-    df = df[df["topic_bucket"].ne("None")].copy()
+    df = df_sent.copy()
+    df = df[df["topic_bucket"].ne("None")]
     df = df[df["topic_bucket"].ne("Other")]
 
     if df.empty:
@@ -475,6 +479,7 @@ def compute_topic_purity(df_sent: pd.DataFrame) -> pd.DataFrame:
     )
 
     return purity.sort_values("purity", ascending=False)
+
 
 # ---------------------------------------------------------
 # SECTION 4 — Executive Summary Page
@@ -599,11 +604,18 @@ def render_executive_summary_page(df_sent: pd.DataFrame):
 def render_topic_buckets_page(df_sent: pd.DataFrame, df_topics: pd.DataFrame, bucket_sizes: pd.DataFrame):
     st.header("High‑Level Topic Buckets")
 
+    # Defensive: no data, no page
+    if df_sent is None or df_sent.empty:
+        st.write("No sentence data available.")
+        return
+
+    # Ensure topic_bucket exists
     if "topic_bucket" not in df_sent.columns:
         df_sent, df_topics, bucket_sizes = apply_topic_buckets(df_sent, df_topics)
 
     df_sent_b = df_sent[df_sent["topic_bucket"].ne("None")].copy()
     df_sent_b = df_sent_b[df_sent_b["topic_bucket"].ne("Other")]
+
 
     st.markdown("### Bucket Sizes")
     if bucket_sizes is not None and not bucket_sizes.empty:
@@ -898,6 +910,10 @@ def main():
     df_sent, df_topics, bucket_sizes = apply_topic_buckets(df_sent, df_topics)
     df_articles = pd.DataFrame(data.get("articles", []))
 
+    # Safety: ensure topic_bucket exists before routing
+    if "topic_bucket" not in df_sent.columns:
+        df_sent, df_topics, bucket_sizes = apply_topic_buckets(df_sent, df_topics)
+
     page = st.sidebar.selectbox(
         "Page",
         [
@@ -914,34 +930,25 @@ def main():
 
     if page == "Executive Summary":
         render_executive_summary_page(df_sent)
-
     elif page == "Topic Buckets":
         render_topic_buckets_page(df_sent, df_topics, bucket_sizes)
-
     elif page == "Overview":
         render_overview_page(df_sent, df_topics, df_articles)
-
     elif page == "Topic Explorer":
         render_topic_explorer_page(df_sent)
-
     elif page == "Sentence Inspector":
         render_sentence_inspector_page(df_sent)
-
     elif page == "Entity Explorer":
         render_entity_explorer_page(df_entities, df_sent)
-
     elif page == "Article Browser":
         render_article_browser_page(df_articles, df_sent)
-
     elif page == "Search":
         render_search_page(df_sent, df_articles)
-    # Safety: ensure topic_bucket exists
-    if "topic_bucket" not in df_sent.columns:
-        df_sent, df_topics, bucket_sizes = apply_topic_buckets(df_sent, df_topics)
 
 
 if __name__ == "__main__":
     main()
+
 
 
 
