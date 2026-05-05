@@ -1,0 +1,100 @@
+name: Run Sentiment Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      company_name:
+        description: "Focus company name (optional)"
+        required: false
+        default: "Aviva"
+      raw_dir:
+        description: "Absolute/relative docx folder path (optional)"
+        required: false
+        default: ""
+      master_json:
+        description: "Output master.json path (relative to repo)"
+        required: false
+        default: "master.json"
+
+permissions:
+  contents: write
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Cache Hugging Face and NLTK
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface
+            ~/nltk_data
+          key: ${{ runner.os }}-hf-nltk-v1
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pipeline
+        env:
+          INPUT_COMPANY_NAME: ${{ github.event.inputs.company_name }}
+          INPUT_RAW_DIR: ${{ github.event.inputs.raw_dir }}
+          INPUT_MASTER_JSON: ${{ github.event.inputs.master_json }}
+        run: |
+          set -euo pipefail
+
+          MASTER_PATH="${INPUT_MASTER_JSON:-master.json}"
+          CMD=(python sentimentanalysis.py --master-json "$MASTER_PATH")
+
+          if [ -n "${INPUT_COMPANY_NAME:-}" ]; then
+            CMD+=(--company-name "$INPUT_COMPANY_NAME")
+          fi
+
+          if [ -n "${INPUT_RAW_DIR:-}" ]; then
+            CMD+=(--raw-dir "$INPUT_RAW_DIR")
+          fi
+
+          echo "Running: ${CMD[*]}"
+          "${CMD[@]}"
+
+      - name: Commit updated outputs
+        env:
+          INPUT_MASTER_JSON: ${{ github.event.inputs.master_json }}
+        run: |
+          set -euo pipefail
+
+          MASTER_PATH="${INPUT_MASTER_JSON:-master.json}"
+          git add "$MASTER_PATH" || true
+          git add figures/*.png 2>/dev/null || true
+
+          if git diff --cached --quiet; then
+            echo "No output changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git commit -m "chore: refresh pipeline outputs"
+          git push
