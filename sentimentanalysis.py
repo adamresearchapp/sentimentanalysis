@@ -1,6 +1,8 @@
+import argparse
 import json
+import os
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, UTC
 from collections import Counter
 import re
 
@@ -21,9 +23,13 @@ from sklearn.metrics.pairwise import cosine_similarity
 # CONFIG
 # -------------------------
 
-RAW_DIR = Path(r"C:\Users\henry\OneDrive\Desktop\Presschoice\Articles\Aviva Articles")
-MASTER_JSON = Path(r"C:\Users\henry\OneDrive\Desktop\Presschoice\Articles\master.json")
-FIGURES_DIR = Path(r"C:\Users\henry\OneDrive\Desktop\Presschoice\Articles\figures")
+PROJECT_ROOT = Path(__file__).resolve().parent
+ARTICLES_BASE_DIR = Path(os.getenv("PRESSCHOICE_ARTICLES_BASE", str(PROJECT_ROOT)))
+PROJECT_ARTICLES_DIR = PROJECT_ROOT / "articles"
+RAW_DIR = Path(os.getenv("PRESSCHOICE_RAW_DIR", str(ARTICLES_BASE_DIR / "Aviva Articles")))
+MASTER_JSON = Path(os.getenv("PRESSCHOICE_MASTER_JSON", str(ARTICLES_BASE_DIR / "master.json")))
+FIGURES_DIR = Path(os.getenv("PRESSCHOICE_FIGURES_DIR", str(ARTICLES_BASE_DIR / "figures")))
+FOCUS_COMPANY_NAME = "Aviva"
 
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -66,9 +72,10 @@ TOPIC_DEFINITIONS = {
         "This sentence explores trust, credibility, controversy, or praise surrounding the company in the public arena."
     ],
 
-    "Leadership": [
+    "Leadership & Governance": [
         "This sentence focuses on the actions, decisions, or statements of the company’s senior leadership or board.",
         "This sentence reports on appointments, resignations, succession plans, or reshuffles in the executive team.",
+        "This sentence examines how the company is being steered, including governance structures, oversight, or accountability.",
         "This sentence highlights the role, influence, or performance of the CEO, chair, or other key executives.",
         "This sentence raises questions about management judgement, strategic direction, or the quality of leadership."
     ],
@@ -102,8 +109,7 @@ TOPIC_DEFINITIONS = {
         "This sentence reports on compliance issues, investigations, enforcement actions, or regulatory sanctions affecting the company.",
         "This sentence describes changes in rules, standards, or legislation that impact how the company operates.",
         "This sentence highlights tensions between the company and regulators, or concerns raised by watchdogs and authorities.",
-        "This sentence considers how the company is responding to regulatory pressure, scrutiny, or compliance risks.",
-        "This sentence examines governance structures, oversight, accountability, and board-level practices that intersect with regulatory responsibilities."
+        "This sentence considers how the company is responding to regulatory pressure, scrutiny, or compliance risks."
     ],
 
     "Strategy & Transformation": [
@@ -130,216 +136,495 @@ TOPIC_THRESHOLD = 0.2
 TOPIC_ALPHA_EMBED = 0.7   # embeddings
 TOPIC_ALPHA_NLI = 0.3     # DeBERTa-MNLI
 
+LOW_SENTIMENT_CONFIDENCE = 0.30
+LOW_TOPIC_CONFIDENCE = 0.25
+
+# Top-two hybrid topics closer than this (probability gap) are "borderline" / near a tie.
+TOPIC_NEAR_TIE_MARGIN = 0.08
+# Below this margin we attach topic_drift_risk for governance review.
+TOPIC_MARGIN_DRIFT = 0.10
 
 
-# -------------------------
-# UTILITIES
-# -------------------------
+def normalize_company_name(name: str) -> str:
+    if not isinstance(name, str):
+        return ""
+    cleaned = re.sub(r"\s+", " ", name).strip()
+    return cleaned
 
-def clean_text(text: str) -> str:
+
+def configure_runtime_paths(company_name: str | None = None, raw_dir: str | None = None, master_json: str | None = None) -> None:
+    """
+    Configure runtime paths before pipeline execution.
+    """
+    global RAW_DIR, MASTER_JSON, FIGURES_DIR, FOCUS_COMPANY_NAME
+
+    if company_name:
+        FOCUS_COMPANY_NAME = normalize_company_name(company_name) or FOCUS_COMPANY_NAME
+
+    if raw_dir:
+        RAW_DIR = Path(raw_dir)
+    else:
+        # Prefer original base path, but auto-fallback to local project/articles if needed.
+        preferred = ARTICLES_BASE_DIR / "Aviva Articles"
+        fallback = PROJECT_ARTICLES_DIR
+        if any(preferred.glob("*.docx")):
+            RAW_DIR = preferred
+        elif fallback.exists() and any(fallback.glob("*.docx")):
+            RAW_DIR = fallback
+        else:
+            RAW_DIR = preferred
+
+    if master_json:
+        MASTER_JSON = Path(master_json)
+    else:
+        MASTER_JSON = Path(os.getenv("PRESSCHOICE_MASTER_JSON", str(ARTICLES_BASE_DIR / "master.json")))
+
+    FIGURES_DIR = Path(os.getenv("PRESSCHOICE_FIGURES_DIR", str(ARTICLES_BASE_DIR / "figures")))
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+
+LEADERSHIP_ROLE_PATTERNS = [
+    ("CEO", r"\bceo\b"),
+    ("Chief Executive Officer", r"\bchief executive officer\b"),
+    ("Chief Executive", r"\bchief executive\b"),
+    ("Chair", r"\bchair(?:man|woman)?\b"),
+    ("CFO", r"\bcfo\b"),
+    ("Chief Financial Officer", r"\bchief financial officer\b"),
+    ("COO", r"\bcoo\b"),
+    ("Chief Operating Officer", r"\bchief operating officer\b"),
+    ("Leadership", r"\bleadership\b"),
+    ("Management", r"\bmanagement\b"),
+]
+
+MANUAL_SENTIMENT_LABELS = {
+    "very negative": "very_negative",
+    "very_negative": "very_negative",
+    "negative": "negative",
+    "neutral": "neutral",
+    "positive": "positive",
+    "very positive": "very_positive",
+    "very_positive": "very_positive",
+}
+
+MANUAL_TOPIC_LABELS = {
+    "corporate reputation & public perception": "Corporate Reputation & Public Perception",
+    "corporate reputation and public perception": "Corporate Reputation & Public Perception",
+    "crpp": "Corporate Reputation & Public Perception",
+    "leadership & governance": "Leadership & Governance",
+    "leadership and governance": "Leadership & Governance",
+    "leadership": "Leadership & Governance",
+    "governance": "Leadership & Governance",
+    "customer experience & service delivery": "Customer Experience & Service Delivery",
+    "customer experience and service delivery": "Customer Experience & Service Delivery",
+    "cx": "Customer Experience & Service Delivery",
+    "products & offerings": "Products & Offerings",
+    "products and offerings": "Products & Offerings",
+    "financial performance & market position": "Financial Performance & Market Position",
+    "financial performance and market position": "Financial Performance & Market Position",
+    "performance": "Financial Performance & Market Position",
+    "fp": "Financial Performance & Market Position",
+    "strategy & transformation": "Strategy & Transformation",
+    "strategy and transformation": "Strategy & Transformation",
+    "regulation & compliance": "Regulation & Compliance",
+    "regulation and compliance": "Regulation & Compliance",
+    "workforce, culture & operations": "Workforce, Culture & Operations",
+    "workforce culture and operations": "Workforce, Culture & Operations",
+    "wo": "Workforce, Culture & Operations",
+    "cb": "Corporate Reputation & Public Perception",
+    "gl": "Leadership & Governance",
+    "ps": "Financial Performance & Market Position",
+}
+
+TOPIC_SHORT_LABELS = {
+    "Corporate Reputation & Public Perception": "CB",
+    "Leadership & Governance": "GL",
+    "Customer Experience & Service Delivery": "CX",
+    "Products & Offerings": "PO",
+    "Financial Performance & Market Position": "PS",
+    "Regulation & Compliance": "RC",
+    "Strategy & Transformation": "ST",
+    "Workforce, Culture & Operations": "WO",
+}
+
+TOPIC_BUCKET_MAP = {
+    "Corporate Reputation & Public Perception": "Customer & Brand Experience",
+    "Customer Experience & Service Delivery": "Customer & Brand Experience",
+    "Products & Offerings": "Customer & Brand Experience",
+    "Financial Performance & Market Position": "Performance & Strategy",
+    "Strategy & Transformation": "Performance & Strategy",
+    "Leadership & Governance": "Governance, Leadership & Accountability",
+    "Regulation & Compliance": "Governance, Leadership & Accountability",
+    "Workforce, Culture & Operations": "Workforce, Culture & Operations",
+}
+
+BUCKET_SHORT_CODES = {
+    "Customer & Brand Experience": "CB",
+    "Workforce, Culture & Operations": "WO",
+    "Performance & Strategy": "PS",
+    "Governance, Leadership & Accountability": "GL",
+}
+
+GOVERNANCE_KEYWORDS = (
+    "governance", "board", "oversight", "committee", "compliance", "regulator",
+    "fca", "pra", "watchdog", "audit", "controls", "sanction"
+)
+
+
+def utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def normalize_probs(values):
+    arr = np.array(values, dtype=float)
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    if arr.size == 0:
+        return []
+    # Shift to non-negative for robust normalization.
+    min_v = float(arr.min())
+    if min_v < 0:
+        arr = arr - min_v
+    total = float(arr.sum())
+    if total <= 0:
+        return [1.0 / len(arr)] * len(arr)
+    return (arr / total).tolist()
+
+
+def majority_label_from_probs(probs):
+    if not probs:
+        return 2  # neutral fallback
+    return int(np.argmax(np.array(probs, dtype=float)))
+
+
+def _safe_hf_call(pipe, text: str):
+    try:
+        return pipe(text, truncation=True, max_length=512)
+    except TypeError:
+        return pipe(text)
+    except Exception:
+        return []
+
+
+def _map_3way_to_5way(label: str, score: float):
+    l = (label or "").lower()
+    s = float(score if score is not None else 0.0)
+    if "negative" in l:
+        return normalize_probs([0.45 * s, 0.55 * s, 0.15, 0.0, 0.0])
+    if "positive" in l:
+        return normalize_probs([0.0, 0.0, 0.15, 0.55 * s, 0.45 * s])
+    return normalize_probs([0.0, 0.2, 0.6 + s * 0.2, 0.2, 0.0])
+
+
+def load_sentiment_pipelines():
+    return {
+        "finbert": hf_pipeline("text-classification", model=MODEL_FINBERT, return_all_scores=True),
+        "cardiff": hf_pipeline("text-classification", model=MODEL_CARDIFF, return_all_scores=True),
+        "distilfin": hf_pipeline("text-classification", model=MODEL_DISTILFIN, return_all_scores=True),
+    }
+
+
+def _scores_to_probs_5(results):
+    if not results:
+        return [0.0, 0.0, 1.0, 0.0, 0.0]
+    rows = results[0] if isinstance(results, list) and results and isinstance(results[0], list) else results
+    if not rows:
+        return [0.0, 0.0, 1.0, 0.0, 0.0]
+    best = max(rows, key=lambda r: float(r.get("score", 0.0)))
+    label = str(best.get("label", "neutral"))
+    score = float(best.get("score", 0.0))
+    return _map_3way_to_5way(label, score)
+
+
+def get_probs_finbert(pipe, text: str):
+    return _scores_to_probs_5(_safe_hf_call(pipe, text))
+
+
+def get_probs_cardiff(pipe, text: str):
+    return _scores_to_probs_5(_safe_hf_call(pipe, text))
+
+
+def get_probs_distilfin(pipe, text: str):
+    return _scores_to_probs_5(_safe_hf_call(pipe, text))
+
+
+def compute_article_dynamic_weights(model_probs_article):
+    # Confidence-based but bounded and stable.
+    raw = {}
+    for model_name, outputs in model_probs_article.items():
+        if not outputs:
+            raw[model_name] = 1.0
+            continue
+        conf = [max(p) for p in outputs if p]
+        raw[model_name] = float(np.mean(conf)) if conf else 1.0
+    total = sum(raw.values()) or 1.0
+    weights = {k: v / total for k, v in raw.items()}
+    # Light floor to avoid model collapse.
+    floor = 0.15
+    weights = {k: max(floor, w) for k, w in weights.items()}
+    total2 = sum(weights.values()) or 1.0
+    return {k: v / total2 for k, v in weights.items()}
+
+
+def load_topic_nli_pipeline():
+    return hf_pipeline("zero-shot-classification", model=MODEL_TOPIC_NLI)
+
+
+def extract_context_features(text: str):
+    t = (text or "").lower()
+    return {
+        "has_forecast": any(x in t for x in ["forecast", "outlook", "guidance", "expects", "expected"]),
+        "has_attribution": any(x in t for x in ["said", "according to", "stated", "reported"]),
+        "has_contrast": any(x in t for x in ["however", "but", "although", "despite", "yet"]),
+    }
+
+def get_topic_short_label(topic_name: str):
+    return TOPIC_SHORT_LABELS.get(topic_name, topic_name)
+
+
+def get_bucket_short_code(topic_bucket: str):
+    return BUCKET_SHORT_CODES.get(topic_bucket, topic_bucket or "None")
+
+
+def classify_leadership_governance_subtopic(sentence_text: str):
+    if not isinstance(sentence_text, str):
+        return "Leadership"
+    text = sentence_text.lower()
+    if any(k in text for k in GOVERNANCE_KEYWORDS):
+        return "Governance"
+    return "Leadership"
+
+
+def _sentence_key(sentence: dict):
+    txt = str(sentence.get("sentence", "")).strip()
+    txt = re.sub(r"\s+", " ", txt).lower()
     return (
-        text.replace("\r", " ")
-            .replace("\n", " ")
-            .replace("\t", " ")
-            .strip()
+        str(sentence.get("article_filename", "")),
+        int(sentence.get("sentence_index_article", -1)),
+        txt,
     )
 
-def load_docx(path: Path) -> str:
-    doc = Document(path)
-    return "\n".join(p.text for p in doc.paragraphs)
 
-def load_txt(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="ignore")
+def load_previous_overrides():
+    if not MASTER_JSON.exists():
+        return {}, {}
+    try:
+        existing = json.loads(MASTER_JSON.read_text(encoding="utf-8"))
+    except Exception:
+        return {}, {}
 
-# -------------------------
-# STEP 1: BUILD ARTICLES
-# -------------------------
-
-def build_articles():
-    print("=== BUILDING ARTICLES ===")
-    articles = []
-    for file in sorted(RAW_DIR.glob("*")):
-        suffix = file.suffix.lower()
-        if suffix == ".docx":
-            text = load_docx(file)
-        elif suffix == ".txt":
-            text = load_txt(file)
-        else:
+    by_global_index = {}
+    by_sentence_key = {}
+    for s in existing.get("sentences", []):
+        if not isinstance(s, dict):
             continue
+        gi = s.get("global_index")
+        if gi is not None:
+            by_global_index[int(gi)] = {
+                "manual_sentiment_override": s.get("manual_sentiment_override"),
+                "manual_topic_override": s.get("manual_topic_override"),
+            }
+        key = _sentence_key(s)
+        by_sentence_key[key] = {
+            "manual_sentiment_override": s.get("manual_sentiment_override"),
+            "manual_topic_override": s.get("manual_topic_override"),
+        }
+    return by_global_index, by_sentence_key
 
-        body = clean_text(text)
+
+def attach_bucket_fields(sentence: dict):
+    tname = sentence.get("topic_name", "None")
+    tbucket = TOPIC_BUCKET_MAP.get(tname, "None")
+    sentence["topic_bucket"] = tbucket
+    sentence["topic_bucket_short"] = get_bucket_short_code(tbucket)
+    if tname == "Leadership & Governance":
+        sentence["leadership_governance_subtopic"] = classify_leadership_governance_subtopic(sentence.get("sentence", ""))
+    else:
+        sentence["leadership_governance_subtopic"] = None
+    return sentence
+
+def normalize_manual_sentiment_label(label: str):
+    if not isinstance(label, str):
+        return None
+    key = label.strip().lower().replace("-", " ").replace("_", " ")
+    return MANUAL_SENTIMENT_LABELS.get(key)
+
+def normalize_manual_topic_label(label: str):
+    if not isinstance(label, str):
+        return None
+    candidate = label.strip().lower()
+    if candidate in MANUAL_TOPIC_LABELS:
+        return MANUAL_TOPIC_LABELS[candidate]
+    for topic_name in TOPIC_DEFINITIONS:
+        if candidate == topic_name.lower():
+            return topic_name
+    return None
+
+def find_leadership_roles(text: str):
+    if not isinstance(text, str):
+        return []
+    found = []
+    lower_text = text.lower()
+    for role_name, pattern in LEADERSHIP_ROLE_PATTERNS:
+        if re.search(pattern, lower_text):
+            found.append(role_name)
+    return sorted(set(found))
+
+def apply_manual_sentiment_override(sentence: dict):
+    override = sentence.get("manual_sentiment_override")
+    label_5 = normalize_manual_sentiment_label(override)
+    if label_5:
+        sentence["label_5"] = label_5
+        sentence["label"] = (
+            "negative" if label_5 in {"very_negative", "negative"} else
+            "positive" if label_5 in {"very_positive", "positive"} else
+            "neutral"
+        )
+        sentence["probs_5"] = normalize_probs([
+            1.0 if i == SENTIMENT_LABELS_5.index(label_5) else 0.0
+            for i in range(len(SENTIMENT_LABELS_5))
+        ])
+        sentence["score"] = 1.0
+        sentence["sentiment_confidence"] = 1.0
+        sentence["needs_review"] = False
+        sentence["manual_sentiment_override_applied"] = True
+    return sentence
+
+
+def resolve_override_topic_score(sentence: dict, topic_name: str) -> float:
+    """
+    Keep manual topic overrides realistic for downstream intensity charts.
+    Prefer the model's hybrid score for the selected topic when available.
+    """
+    topic_names = list(TOPIC_DEFINITIONS.keys())
+    candidate_scores = []
+
+    # 1) Topic-specific hybrid score from model outputs (preferred).
+    hybrid_scores = sentence.get("topic_scores_hybrid")
+    if isinstance(hybrid_scores, list) and topic_name in topic_names:
+        idx = topic_names.index(topic_name)
+        if idx < len(hybrid_scores):
+            try:
+                candidate_scores.append(float(hybrid_scores[idx]))
+            except Exception:
+                pass
+
+    # 2) Existing sentence-level topic score as fallback.
+    try:
+        candidate_scores.append(float(sentence.get("topic_score", 0.0)))
+    except Exception:
+        pass
+
+    valid = [s for s in candidate_scores if np.isfinite(s) and s > 0]
+    if valid:
+        score = max(valid)
+    else:
+        score = float(LOW_TOPIC_CONFIDENCE)
+
+    # Never let manual override force "absolute certainty".
+    return float(min(max(score, 0.05), 0.95))
+
+
+def apply_manual_topic_override(sentence: dict):
+    override = sentence.get("manual_topic_override")
+    topic_name = normalize_manual_topic_label(override)
+    if topic_name:
+        score = resolve_override_topic_score(sentence, topic_name)
+        sentence["topic_name"] = topic_name
+        sentence["topic_score"] = score
+        sentence["topic_confidence"] = score
+        sentence["needs_review"] = False
+        sentence["manual_topic_override_applied"] = True
+    return sentence
+
+def update_sentence_override(
+    master: dict,
+    global_index: int,
+    sentiment_override: str = None,
+    topic_override: str = None
+) -> bool:
+    for sentence in master.get("sentences", []):
+        if sentence.get("global_index") == global_index:
+            changed = False
+            if sentiment_override is not None:
+                sentence["manual_sentiment_override"] = sentiment_override
+                apply_manual_sentiment_override(sentence)
+                changed = True
+            if topic_override is not None:
+                sentence["manual_topic_override"] = topic_override
+                apply_manual_topic_override(sentence)
+                changed = True
+            if changed:
+                attach_bucket_fields(sentence)
+            return True
+    return False
+
+
+def _read_docx_text(docx_path: Path) -> str:
+    try:
+        doc = Document(str(docx_path))
+        parts = [p.text.strip() for p in doc.paragraphs if p.text and p.text.strip()]
+        return "\n".join(parts).strip()
+    except Exception:
+        return ""
+
+
+def create_master_json(allow_empty_input: bool = False) -> dict:
+    """
+    Build/refresh master.json article inventory while preserving prior sentence-level
+    override state so downstream reruns can reapply manual corrections.
+    """
+    existing = {}
+    if MASTER_JSON.exists():
+        try:
+            existing = json.loads(MASTER_JSON.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+
+    article_files = sorted(RAW_DIR.glob("*.docx"), key=lambda p: p.name.lower())
+    articles = []
+    for idx, path in enumerate(article_files):
+        body = _read_docx_text(path)
         if not body:
             continue
-
-        article_id = file.stem
-        article_filename = file.name
-
         articles.append({
-            "article_id": article_id,
-            "article_filename": article_filename,
+            "article_id": f"A{idx + 1:04d}",
+            "article_index": int(idx),
+            "article_filename": path.name,
+            "source_path": str(path),
+            "ingested_at": utc_now_iso(),
             "body": body,
         })
 
-        print(f"Loaded article: {article_filename}")
-
-    for idx, a in enumerate(articles):
-        a["article_index"] = idx
-
-    return articles
-
-def create_master_json():
-    articles = build_articles()
-    master_text = "\n\n".join(a["body"] for a in articles)
+    if len(articles) == 0 and not allow_empty_input:
+        raise RuntimeError(
+            "No .docx articles found in input folder; aborting to avoid overwriting master.json with empty data. "
+            "Set --raw-dir to the correct folder or pass --allow-empty-input to override."
+        )
 
     master = {
-        "id": "master_corpus",
-        "source": "local_combined",
-        "created_at": datetime.utcnow().isoformat(),
-        "body": master_text,
+        "created_at": utc_now_iso(),
+        "raw_dir": str(RAW_DIR),
+        "focus_company": FOCUS_COMPANY_NAME,
+        "focus_company_aliases": [FOCUS_COMPANY_NAME] if FOCUS_COMPANY_NAME else [],
+        "article_count": len(articles),
         "articles": articles,
+        # Preserve historical annotations until rerun steps update them.
+        "sentences": existing.get("sentences", []),
+        "topics": existing.get("topics", []),
+        "entities_corpus": existing.get("entities_corpus", []),
+        "entities_linked": existing.get("entities_linked", []),
+        "entity_sentiment": existing.get("entity_sentiment", []),
+        "entity_timeline": existing.get("entity_timeline", []),
+        "topic_governance": existing.get("topic_governance", {}),
     }
 
     MASTER_JSON.write_text(json.dumps(master, indent=2), encoding="utf-8")
-    print("Master JSON created:", MASTER_JSON)
-
-# -------------------------
-# SENTIMENT HELPERS
-# -------------------------
-
-def normalize_probs(probs: list) -> list:
-    s = float(sum(probs))
-    if s <= 0:
-        return [1.0 / len(probs)] * len(probs)
-    return [p / s for p in probs]
-
-def majority_label_from_probs(probs: list) -> int:
-    return int(max(range(len(probs)), key=lambda i: probs[i]))
-
-def map_3class_to_5class(label_3: str, score: float) -> list:
-    label_3 = label_3.lower()
-    score = max(0.0, min(1.0, float(score)))
-
-    if label_3.startswith("pos"):
-        if score >= 0.7:
-            return normalize_probs([0.0, 0.0, 0.05, 0.25, 0.70])
-        elif score >= 0.4:
-            return normalize_probs([0.0, 0.0, 0.10, 0.70, 0.20])
-        else:
-            return normalize_probs([0.0, 0.05, 0.40, 0.45, 0.10])
-
-    elif label_3.startswith("neg"):
-        if score >= 0.7:
-            return normalize_probs([0.70, 0.25, 0.05, 0.0, 0.0])
-        elif score >= 0.4:
-            return normalize_probs([0.20, 0.70, 0.10, 0.0, 0.0])
-        else:
-            return normalize_probs([0.10, 0.45, 0.40, 0.05, 0.0])
-
-    else:
-        return normalize_probs([0.05, 0.15, 0.60, 0.15, 0.05])
-
-# -------------------------
-# MODEL LOADERS
-# -------------------------
-
-def load_sentiment_pipelines():
-    print("=== LOADING SENTIMENT MODELS ===")
-    finbert = hf_pipeline("text-classification", model=MODEL_FINBERT, return_all_scores=True)
-    cardiff = hf_pipeline("text-classification", model=MODEL_CARDIFF, return_all_scores=True)
-    distilfin = hf_pipeline("text-classification", model=MODEL_DISTILFIN, return_all_scores=True)
-    return {
-        "finbert": finbert,
-        "cardiff": cardiff,
-        "distilfin": distilfin,
-    }
-
-def load_topic_nli_pipeline():
-    print("=== LOADING TOPIC NLI MODEL (DeBERTa-v3-base-mnli) ===")
-    return hf_pipeline(
-        "zero-shot-classification",
-        model=MODEL_TOPIC_NLI,
-        tokenizer=MODEL_TOPIC_NLI,
-        use_fast=False
-    )
-
-# -------------------------
-# MODEL WRAPPERS (SENTIMENT)
-# -------------------------
-
-def get_probs_finbert(clf, text: str) -> list:
-    res = clf(text)[0]
-    scores = {r["label"].lower(): float(r["score"]) for r in res}
-    pos = scores.get("positive", 0.0)
-    neg = scores.get("negative", 0.0)
-    neu = scores.get("neutral", 0.0)
-    label_3 = max(
-        ("positive", "negative", "neutral"),
-        key=lambda x: {"positive": pos, "negative": neg, "neutral": neu}[x]
-    )
-    score_3 = {"positive": pos, "negative": neg, "neutral": neu}[label_3]
-    return normalize_probs(map_3class_to_5class(label_3, score_3))
-
-def get_probs_cardiff(clf, text: str) -> list:
-    res = clf(text)[0]
-    scores = {r["label"].lower(): float(r["score"]) for r in res}
-    neg = scores.get("negative", 0.0)
-    neu = scores.get("neutral", 0.0)
-    pos = scores.get("positive", 0.0)
-    label_3 = max(
-        ("positive", "negative", "neutral"),
-        key=lambda x: {"positive": pos, "negative": neg, "neutral": neu}[x]
-    )
-    score_3 = {"positive": pos, "negative": neg, "neutral": neu}[label_3]
-    return normalize_probs(map_3class_to_5class(label_3, score_3))
-
-def get_probs_distilfin(clf, text: str) -> list:
-    res = clf(text)[0]
-    scores = {r["label"].lower(): float(r["score"]) for r in res}
-    pos = scores.get("positive", 0.0)
-    neg = scores.get("negative", 0.0)
-    neu = scores.get("neutral", 0.0)
-    label_3 = max(
-        ("positive", "negative", "neutral"),
-        key=lambda x: {"positive": pos, "negative": neg, "neutral": neu}[x]
-    )
-    score_3 = {"positive": pos, "negative": neg, "neutral": neu}[label_3]
-    return normalize_probs(map_3class_to_5class(label_3, score_3))
-
-# -------------------------
-# DYNAMIC WEIGHTING (3-MODEL ENSEMBLE)
-# -------------------------
-
-def compute_article_dynamic_weights(model_probs_article: dict) -> dict:
-    any_model = next(iter(model_probs_article.keys()))
-    n_sent = len(model_probs_article[any_model])
-    if n_sent == 0:
-        return {m: 1.0 / len(model_probs_article) for m in model_probs_article}
-
-    agreements = {m: 0 for m in model_probs_article}
-
-    for i in range(n_sent):
-        preds = {}
-        for m, probs_list in model_probs_article.items():
-            preds[m] = majority_label_from_probs(probs_list[i])
-        majority_idx = Counter(preds.values()).most_common(1)[0][0]
-        for m, pidx in preds.items():
-            if pidx == majority_idx:
-                agreements[m] += 1
-
-    total = sum(agreements.values())
-    if total <= 0:
-        return {m: 1.0 / len(model_probs_article) for m in model_probs_article}
-
-    return {m: agreements[m] / total for m in model_probs_article}
-
-# -------------------------
-# SENTIMENT PIPELINE
-# -------------------------
+    print(f"Master JSON refreshed with {len(articles)} articles.")
+    return master
 
 def run_sentiment(master: dict) -> dict:
     print("=== RUNNING SENTIMENT (5-CLASS ENSEMBLE, 3 MODELS) ===")
 
     pipes = load_sentiment_pipelines()
+    prev_by_global_index, prev_by_sentence_key = load_previous_overrides()
 
     all_sentences = []
     article_weights = {}
@@ -358,7 +643,6 @@ def run_sentiment(master: dict) -> dict:
         sents = [s.strip() for s in sent_tokenize(body) if s.strip()]
 
         model_probs_article = {m: [] for m in SENTIMENT_MODELS}
-
         for s in sents:
             model_probs_article["finbert"].append(get_probs_finbert(pipes["finbert"], s))
             model_probs_article["cardiff"].append(get_probs_cardiff(pipes["cardiff"], s))
@@ -367,26 +651,7 @@ def run_sentiment(master: dict) -> dict:
         weights = compute_article_dynamic_weights(model_probs_article)
         article_weights[article_id] = weights
 
-        # Helper: check if sentence is mostly numeric
-        def is_mostly_numeric(text):
-            numbers = re.findall(r"[\d,.%]+", text)
-            return len(numbers) > 0 and len(numbers) * 4 > len(text.split())
-
-        # Helper: check if all model scores are close
-        def all_scores_close(probs, threshold=0.2):
-            return max(probs) - min(probs) < threshold
-
-        # Helper: check for strong sentiment words
-        STRONG_POS = {"record", "surge", "growth", "outperform", "beat", "exceed", "strong", "rise", "soar", "jump", "increase", "improve", "gain", "boost", "expand", "highest", "best"}
-        STRONG_NEG = {"disappoint", "miss", "fall", "decline", "drop", "dip", "concern", "worry", "pressure", "loss", "weak", "lowest", "worst", "cut", "reduce", "slump", "plunge", "down"}
-        def has_strong_sentiment(text):
-            t = text.lower()
-            return any(w in t for w in STRONG_POS) or any(w in t for w in STRONG_NEG)
-
         for idx, s in enumerate(sents):
-            # Ensure sentence is a string (avoid floats/NaN from tokenization issues)
-            if not isinstance(s, str):
-                s = "" if s is None else str(s)
             final_probs = [0.0] * 5
             per_model_outputs = {}
 
@@ -403,82 +668,14 @@ def run_sentiment(master: dict) -> dict:
             final_probs = normalize_probs(final_probs)
             final_idx = majority_label_from_probs(final_probs)
             final_label_5 = SENTIMENT_LABELS_5[final_idx]
-            final_score = final_probs[final_idx]
+            final_score = float(final_probs[final_idx])
 
-            # 1. Only assign 'very' classes if max model confidence >0.8
-            if final_label_5 in ("very_positive", "very_negative") and final_score <= 0.8:
-                # Exclude both 'very' classes and renormalize so probs match chosen label
-                temp_probs = final_probs[:]
-                temp_probs[0] = 0.0
-                temp_probs[4] = 0.0
-                total = sum(temp_probs)
-                if total > 0:
-                    final_probs = [p / total for p in temp_probs]
-                else:
-                    final_probs = normalize_probs(temp_probs)
-                final_idx = majority_label_from_probs(final_probs)
-                final_label_5 = SENTIMENT_LABELS_5[final_idx]
-                final_score = final_probs[final_idx]
-
-            # 2. If all model scores are close (difference <0.2), assign neutral
-            if all_scores_close(final_probs):
-                final_label_5 = "neutral"
-                final_score = final_probs[2]  # neutral index
-
-            # 3. For sentences with contrast words, prefer main clause sentiment
-            contrast_match = re.search(r"\b(but|although|however|though)\b", s, re.IGNORECASE)
-            if contrast_match:
-                conj = contrast_match.group(1).lower()
-                parts = re.split(r"\b(but|although|however|though)\b", s, flags=re.IGNORECASE)
-                if len(parts) > 2:
-                    # If conjunction is 'although' or 'though', the main clause is before it.
-                    # For 'but' or 'however' the main clause often comes after.
-                    if conj in ("although", "though"):
-                        main_clause = parts[0].strip()
-                    else:
-                        main_clause = parts[-1].strip()
-                    # Re-run ensemble on main clause
-                    clause_probs = [0.0] * 5
-                    for m in SENTIMENT_MODELS:
-                        if m == "finbert":
-                            clause_p = get_probs_finbert(pipes[m], main_clause)
-                        elif m == "cardiff":
-                            clause_p = get_probs_cardiff(pipes[m], main_clause)
-                        elif m == "distilfin":
-                            clause_p = get_probs_distilfin(pipes[m], main_clause)
-                        else:
-                            continue
-                        w = weights[m]
-                        for j in range(5):
-                            clause_probs[j] += w * clause_p[j]
-                    clause_probs = normalize_probs(clause_probs)
-                    clause_idx = majority_label_from_probs(clause_probs)
-                    # Replace final_probs with clause_probs so saved probs match label
-                    final_probs = clause_probs
-                    # Re-apply 'very' class threshold logic to clause_probs
-                    final_idx = clause_idx
-                    final_label_5 = SENTIMENT_LABELS_5[final_idx]
-                    final_score = final_probs[final_idx]
-                    if final_label_5 in ("very_positive", "very_negative") and final_score <= 0.8:
-                        temp_probs = final_probs[:]
-                        temp_probs[0] = 0.0
-                        temp_probs[4] = 0.0
-                        s2 = sum(temp_probs)
-                        if s2 > 0:
-                            final_probs = [p / s2 for p in temp_probs]
-                        else:
-                            final_probs = normalize_probs(temp_probs)
-                        final_idx = majority_label_from_probs(final_probs)
-                        final_label_5 = SENTIMENT_LABELS_5[final_idx]
-                        final_score = final_probs[final_idx]
-                    if all_scores_close(final_probs):
-                        final_label_5 = "neutral"
-                        final_score = final_probs[2]
-
-            # 4. If sentence is mostly numeric and lacks strong sentiment words, bias toward neutral
-            if is_mostly_numeric(s) and not has_strong_sentiment(s):
-                final_label_5 = "neutral"
-                final_score = final_probs[2]
+            role_tags = find_leadership_roles(s)
+            review_reasons = []
+            if final_score < LOW_SENTIMENT_CONFIDENCE:
+                review_reasons.append("low_sentiment_confidence")
+            if role_tags:
+                review_reasons.append("leadership_figure")
 
             if final_label_5 in ["very_negative", "negative"]:
                 label_3 = "negative"
@@ -489,7 +686,7 @@ def run_sentiment(master: dict) -> dict:
 
             global_counts_5[final_label_5] += 1
 
-            all_sentences.append({
+            sentence_record = {
                 "global_index": int(sentence_global_index),
                 "sentence_index_article": int(idx),
                 "sentence": s,
@@ -499,47 +696,41 @@ def run_sentiment(master: dict) -> dict:
                 "label_5": final_label_5,
                 "label": label_3,
                 "score": float(final_score),
+                "sentiment_confidence": float(final_score),
                 "probs_5": [float(p) for p in final_probs],
                 "model_outputs": per_model_outputs,
-            })
-            sentence_global_index += 1
+                "figure_roles": role_tags,
+                "review_reasons": review_reasons,
+                "needs_review": bool(review_reasons),
+                "manual_sentiment_override": None,
+                "manual_topic_override": None,
+                "manual_sentiment_override_applied": False,
+                "manual_topic_override_applied": False,
+            }
+
+            # Persist manual overrides across pipeline reruns.
+            prev = prev_by_global_index.get(sentence_global_index)
+            if prev is None:
+                prev = prev_by_sentence_key.get(_sentence_key(sentence_record))
+            if prev:
+                sentence_record["manual_sentiment_override"] = prev.get("manual_sentiment_override")
+                sentence_record["manual_topic_override"] = prev.get("manual_topic_override")
+
+            sentence_record = apply_manual_sentiment_override(sentence_record)
+            all_sentences.append(sentence_record)
             sentence_global_index += 1
 
     master["sentences"] = all_sentences
 
     total = sum(global_counts_5.values())
     master["sentiment_5"] = {k: v / total for k, v in global_counts_5.items()} if total > 0 else {}
-
     master["article_weights"] = article_weights
     return master
-
-# -------------------------
-# SENTENCE CONTEXT FEATURES (journalism-aware)
-# -------------------------
-
-HEDGING_PATTERN = re.compile(r"\b(may|might|could|potentially|possibly|appears to|seems to)\b", re.IGNORECASE)
-ATTRIBUTION_PATTERN = re.compile(r"\b(analysts? said|according to|people familiar with the matter|sources said)\b", re.IGNORECASE)
-CONTRAST_PATTERN = re.compile(r"\b(despite|although|even though|however|but)\b", re.IGNORECASE)
-FORECAST_PATTERN = re.compile(r"\b(is expected to|is forecast to|is projected to|outlook|guidance)\b", re.IGNORECASE)
-
-def extract_context_features(text: str) -> dict:
-    return {
-        "has_hedging": bool(HEDGING_PATTERN.search(text)),
-        "has_attribution": bool(ATTRIBUTION_PATTERN.search(text)),
-        "has_contrast": bool(CONTRAST_PATTERN.search(text)),
-        "has_forecast": bool(FORECAST_PATTERN.search(text)),
-    }
-
-# -------------------------
-# HYBRID TOPIC CLASSIFIER (mpnet + DeBERTa-MNLI + entity/context nudging)
-# -------------------------
-
 
 def run_topics_hybrid(master: dict, topic_threshold=None, alpha_embed=None, alpha_nli=None, verbose=True):
     if verbose:
         print("=== HYBRID TOPIC CLASSIFICATION (mpnet + DeBERTa-MNLI + nudging) ===")
 
-    # Use provided or global values
     topic_threshold = topic_threshold if topic_threshold is not None else TOPIC_THRESHOLD
     alpha_embed = alpha_embed if alpha_embed is not None else TOPIC_ALPHA_EMBED
     alpha_nli = alpha_nli if alpha_nli is not None else TOPIC_ALPHA_NLI
@@ -598,10 +789,8 @@ def run_topics_hybrid(master: dict, topic_threshold=None, alpha_embed=None, alph
         nli_scores.append(score_vec)
 
     nli_scores = np.array(nli_scores)
-
     hybrid_scores = alpha_embed * emb_scores + alpha_nli * nli_scores
 
-    # entity-aware topic hints
     def entity_topic_hint(sent):
         hints = Counter()
         ents = sent.get("entities", [])
@@ -611,40 +800,29 @@ def run_topics_hybrid(master: dict, topic_threshold=None, alpha_embed=None, alph
 
             if label in {"ORG", "NORP"} and any(x in text for x in ["authority", "regulator", "commission", "fca", "pra"]):
                 hints["Regulation & Compliance"] += 1
-
             if label == "PERSON":
-                hints["Leadership"] += 1
-
+                hints["Leadership & Governance"] += 1
             if label == "CAP_PHRASE" and any(x in text for x in ["transformation", "strategy", "programme", "initiative"]):
                 hints["Strategy & Transformation"] += 1
-
             if label == "FIN_TERM":
                 if any(x in text for x in ["profit", "earnings", "revenue", "loss", "solvency", "capital", "guidance"]):
                     hints["Financial Performance & Market Position"] += 1
-
             if label == "FIN_TERM" and any(x in text for x in ["claims", "premium", "customer", "policyholder"]):
                 hints["Customer Experience & Service Delivery"] += 1
-
         return hints
 
-    # apply nudging + context and assign
     for i, s in enumerate(sentences):
         base_row = hybrid_scores[i].copy()
-
         ctx = extract_context_features(s["sentence"])
         s["context_features"] = ctx
 
         ctx_boost = np.zeros_like(base_row)
-
         if ctx["has_forecast"]:
-            if "Financial Performance & Market Position" in topic_names:
-                j = topic_names.index("Financial Performance & Market Position")
-                ctx_boost[j] += 0.05
-
+            j = topic_names.index("Financial Performance & Market Position")
+            ctx_boost[j] += 0.05
         if ctx["has_attribution"] or ctx["has_contrast"]:
-            if "Corporate Reputation & Public Perception" in topic_names:
-                j = topic_names.index("Corporate Reputation & Public Perception")
-                ctx_boost[j] += 0.03
+            j = topic_names.index("Corporate Reputation & Public Perception")
+            ctx_boost[j] += 0.03
 
         ent_hints = entity_topic_hint(s)
         ent_boost = np.zeros_like(base_row)
@@ -653,16 +831,29 @@ def run_topics_hybrid(master: dict, topic_threshold=None, alpha_embed=None, alph
                 j = topic_names.index(tname)
                 ent_boost[j] += 0.04 * min(cnt, 3)
 
-        row = base_row + ctx_boost + ent_boost
-        row = normalize_probs(list(row))
-        row = np.array(row)
+        figure_roles = find_leadership_roles(s["sentence"])
+        s["figure_roles"] = figure_roles
+        if figure_roles and "Leadership & Governance" in topic_names:
+            j = topic_names.index("Leadership & Governance")
+            ent_boost[j] += 0.08
 
+        row = normalize_probs(list(base_row + ctx_boost + ent_boost))
+        row = np.asarray(row, dtype=float)
         best_idx = int(np.argmax(row))
         best_score = float(row[best_idx])
+        idx_sorted = np.argsort(row)
+        second_idx = int(idx_sorted[-2]) if len(row) > 1 else best_idx
+        second_best = float(row[second_idx])
+        margin = float(best_score - second_best)
 
         s["topic_scores_embedding"] = [float(x) for x in emb_scores[i]]
         s["topic_scores_nli"] = [float(x) for x in nli_scores[i]]
         s["topic_scores_hybrid"] = [float(x) for x in row]
+        s["topic_confidence"] = best_score
+        s["topic_margin"] = margin
+        s["topic_second_best"] = topic_names[second_idx]
+        s["topic_near_tie"] = bool(margin < TOPIC_NEAR_TIE_MARGIN)
+        s["topic_predicted_before_override"] = topic_names[best_idx]
 
         if best_score >= topic_threshold:
             s["topic_name"] = topic_names[best_idx]
@@ -671,7 +862,16 @@ def run_topics_hybrid(master: dict, topic_threshold=None, alpha_embed=None, alph
             s["topic_name"] = "None"
             s["topic_score"] = best_score
 
-    # article-level smoothing and smart fallback
+        if best_score < LOW_TOPIC_CONFIDENCE and "low_topic_confidence" not in s.get("review_reasons", []):
+            s.setdefault("review_reasons", []).append("low_topic_confidence")
+            s["needs_review"] = True
+        if s["topic_margin"] < TOPIC_MARGIN_DRIFT and "topic_drift_risk" not in s.get("review_reasons", []):
+            s.setdefault("review_reasons", []).append("topic_drift_risk")
+            s["needs_review"] = True
+
+        s = apply_manual_topic_override(s)
+        s = attach_bucket_fields(s)
+
     by_article = {}
     for s in sentences:
         by_article.setdefault(s["article_id"], []).append(s)
@@ -697,6 +897,7 @@ def run_topics_hybrid(master: dict, topic_threshold=None, alpha_embed=None, alph
                 cand = Counter(neighbour_topics).most_common(1)[0][0]
                 s["topic_name"] = cand
                 s["topic_score"] = max_score
+                s = attach_bucket_fields(s)
 
     topic_summary = []
     for t in topic_names:
@@ -704,6 +905,7 @@ def run_topics_hybrid(master: dict, topic_threshold=None, alpha_embed=None, alph
         definition_text = " ".join(TOPIC_DEFINITIONS[t])
         topic_summary.append({
             "topic_name": t,
+            "short_label": get_topic_short_label(t),
             "size": count,
             "definition": definition_text,
         })
@@ -711,16 +913,15 @@ def run_topics_hybrid(master: dict, topic_threshold=None, alpha_embed=None, alph
     none_count = sum(1 for s in sentences if s.get("topic_name") == "None")
     topic_summary.append({
         "topic_name": "None",
+        "short_label": "None",
         "size": none_count,
         "definition": "Sentences that do not strongly match any predefined topic.",
     })
 
     master["topics"] = topic_summary
     master["sentences"] = sentences
+    master = compute_topic_governance_metrics(master)
     return master, sent_embeddings
-
-
-
 
 # -------------------------
 # ENTITY EXTRACTION (GENERIC + CAPITALISED + FINANCIAL KEYWORDS)
@@ -1014,6 +1215,93 @@ def build_topic_summaries(master: dict) -> dict:
     master["topics"] = topics
     return master
 
+
+def compute_topic_governance_metrics(master: dict) -> dict:
+    sentences = master.get("sentences", [])
+    if not sentences:
+        master["topic_governance"] = {
+            "topic_purity": [],
+            "bucket_distribution": [],
+            "flagged_sentences": [],
+            "drift_summary": {},
+        }
+        return master
+
+    df = pd.DataFrame(sentences)
+    if "topic_name" not in df.columns:
+        df["topic_name"] = "None"
+    if "topic_bucket" not in df.columns:
+        df["topic_bucket"] = df["topic_name"].map(TOPIC_BUCKET_MAP).fillna("None")
+    if "topic_margin" not in df.columns:
+        df["topic_margin"] = np.nan
+    if "manual_topic_override_applied" not in df.columns:
+        df["manual_topic_override_applied"] = False
+
+    valid = df[df["topic_name"].notna() & df["topic_name"].ne("None")].copy()
+
+    purity_rows = []
+    bucket_rows = []
+    if not valid.empty:
+        for topic_name, sub in valid.groupby("topic_name"):
+            bucket_counts = sub["topic_bucket"].value_counts(dropna=False)
+            top_bucket = bucket_counts.index[0]
+            top_count = int(bucket_counts.iloc[0])
+            total = int(bucket_counts.sum())
+            purity = (top_count / total) * 100.0 if total else 0.0
+            purity_rows.append({
+                "topic_name": topic_name,
+                "expected_bucket": TOPIC_BUCKET_MAP.get(topic_name, "None"),
+                "dominant_bucket": top_bucket,
+                "topic_purity_percent": float(purity),
+                "sentence_count": total,
+            })
+
+        bucket_dist = (
+            valid.groupby(["topic_bucket", "topic_name"])
+            .size()
+            .reset_index(name="count")
+            .sort_values(["topic_bucket", "count"], ascending=[True, False])
+        )
+        bucket_rows = bucket_dist.to_dict(orient="records")
+
+    if "needs_review" in df.columns:
+        flagged = df[df["needs_review"] == True].copy()
+    else:
+        flagged = pd.DataFrame()
+    flagged_rows = []
+    if not flagged.empty:
+        keep_cols = [
+            c for c in [
+                "global_index",
+                "article_id",
+                "sentence",
+                "topic_name",
+                "topic_bucket",
+                "topic_margin",
+                "topic_confidence",
+                "sentiment_confidence",
+                "review_reasons",
+            ] if c in flagged.columns
+        ]
+        flagged_rows = flagged[keep_cols].head(500).to_dict(orient="records")
+
+    override_count = int(df["manual_topic_override_applied"].fillna(False).sum())
+    drift_count = 0
+    if "review_reasons" in df.columns:
+        drift_count = int(df["review_reasons"].apply(lambda x: isinstance(x, list) and "topic_drift_risk" in x).sum())
+
+    master["topic_governance"] = {
+        "topic_purity": purity_rows,
+        "bucket_distribution": bucket_rows,
+        "flagged_sentences": flagged_rows,
+        "drift_summary": {
+            "sentences_flagged_for_drift": drift_count,
+            "sentences_with_manual_topic_override": override_count,
+            "total_sentences": int(len(df)),
+        },
+    }
+    return master
+
 # -------------------------
 # PLOTS
 # -------------------------
@@ -1150,8 +1438,31 @@ def plot_topic_weighted_bars(master: dict):
 # -------------------------
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run sentiment/topic/entity pipeline.")
+    parser.add_argument("--company-name", type=str, default=None, help="Focus company name (used for metadata and article folder resolution).")
+    parser.add_argument("--raw-dir", type=str, default=None, help="Override article input directory containing .docx files.")
+    parser.add_argument("--master-json", type=str, default=None, help="Override output master.json path.")
+    parser.add_argument(
+        "--allow-empty-input",
+        action="store_true",
+        help="Allow zero input articles (normally blocked to protect master.json).",
+    )
+    return parser.parse_args()
+
+
 def main():
-    create_master_json()
+    args = parse_args()
+    configure_runtime_paths(
+        company_name=args.company_name,
+        raw_dir=args.raw_dir,
+        master_json=args.master_json,
+    )
+    print(f"Focus company: {FOCUS_COMPANY_NAME}")
+    print(f"Article folder: {RAW_DIR}")
+    print(f"Master JSON: {MASTER_JSON}")
+
+    create_master_json(allow_empty_input=bool(args.allow_empty_input))
     master = json.loads(MASTER_JSON.read_text(encoding="utf-8"))
 
     master = run_sentiment(master)

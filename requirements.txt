@@ -1,0 +1,15 @@
+streamlit
+pandas
+numpy
+matplotlib
+seaborn
+altair
+wordcloud
+pillow
+python-pptx
+python-docx
+nltk
+scikit-learn
+sentence-transformers
+transformers
+torch
