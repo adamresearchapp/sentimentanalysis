@@ -364,10 +364,10 @@ def save_chart(chart: alt.Chart, filename: str) -> str:
             font="sans-serif",
             fontSize=20,
         ).configure_view(
-            stroke="transparent",
-            fill="transparent",
+            stroke="#DDDDDD",
+            fill="white",
         ).configure(
-            background="transparent",
+            background="white",
         ).properties(
             autosize=alt.AutoSizeParams(type="pad", contains="padding"),
         )
