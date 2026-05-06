@@ -9,8 +9,11 @@ from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.enum.text import PP_ALIGN
 from pptx.dml.color import RGBColor
-from pptx.oxml import OxmlElement
 from pptx.oxml.ns import qn
+try:
+    from pptx.oxml import OxmlElement
+except ImportError:
+    from pptx.oxml.xmlchemy import OxmlElement
 import io
 import hmac
 from pathlib import Path
