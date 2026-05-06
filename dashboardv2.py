@@ -10,6 +10,7 @@ from pptx.util import Inches, Pt
 from pptx.enum.text import PP_ALIGN
 from pptx.dml.color import RGBColor
 import io
+import hmac
 from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Optional
@@ -23,8 +24,6 @@ import os
 import shutil
 import time
 import re
-import subprocess
-import sys
 
 try:
     from PIL import Image
@@ -278,6 +277,34 @@ BUCKET_SHORT_TO_NAME = {abbrev: full for full, abbrev in BUCKET_SHORT.items()}
 TOPIC_THRESHOLD = 0.18
 TOPIC_ALPHA_EMBED = 0.6
 TOPIC_ALPHA_NLI = 0.4
+
+BUCKET_KEY_TEXT = (
+    "Buckets key: "
+    "CB = Customer & Brand Experience, "
+    "GL = Governance, Leadership & Accountability, "
+    "PS = Performance & Strategy, "
+    "WO = Workforce, Culture & Operations."
+)
+
+FINE_TOPIC_KEY_TEXT = (
+    "Fine topics key: "
+    "CR = Corporate Reputation & Public Perception, "
+    "CX = Customer Experience & Service Delivery, "
+    "FP = Financial Performance & Market Position, "
+    "LG = Leadership & Governance, "
+    "PO = Products & Offerings, "
+    "RC = Regulation & Compliance, "
+    "ST = Strategy & Transformation, "
+    "WF = Workforce, Culture & Operations."
+)
+
+PPT_FOOTER_KEY_TEXT = (
+    "Key: Buckets CB=Customer & Brand Experience, GL=Governance/Leadership/Accountability, "
+    "PS=Performance & Strategy, WO=Workforce/Culture/Operations | "
+    "Fine topics CR=Corporate Reputation, CX=Customer Experience, FP=Financial Performance, "
+    "LG=Leadership & Governance, PO=Products & Offerings, RC=Regulation & Compliance, "
+    "ST=Strategy & Transformation, WF=Workforce/Culture/Operations"
+)
 
 # ---------------------------------------------------------
 # DESIGN FUNCTIONS: SAVE CHART WITH THEME
@@ -827,7 +854,7 @@ def render_manual_override_controls(df_sent: pd.DataFrame, key_prefix: str = "ov
     with col3:
         topic_override = st.selectbox(
             "Override Topic",
-            ["(no override)"] + list(TOPIC_DEFINITIONS.keys()),
+            ["(no override)", "None"] + list(TOPIC_DEFINITIONS.keys()),
             key=f"{key_prefix}_topic",
         )
 
@@ -836,8 +863,8 @@ def render_manual_override_controls(df_sent: pd.DataFrame, key_prefix: str = "ov
         if ok:
             st.success(f"✓ {message}")
             st.info(
-                "Dashboard charts and storyboard exports read from `master.json` after reload—no pipeline rerun needed for overrides. "
-                "Use **Rerun Pipeline** only for new/changed articles or a full model refresh."
+                "Dashboard charts and storyboard exports read from `master.json` after reload—no local pipeline rerun needed for overrides. "
+                "For new/changed articles or full model refreshes, run the **Run Sentiment Pipeline** GitHub Action."
             )
             st.rerun()
         else:
@@ -1445,7 +1472,7 @@ def bucket_balance_bubble(df_sent: pd.DataFrame):
         y=alt.Y(
             "avg_intensity:Q",
             axis=alt.Axis(
-                title="Positivity",
+                title="Intensity",
                 offset=8,
                 labelPadding=AXIS_LABEL_PADDING,
                 titlePadding=AXIS_TITLE_PADDING,
@@ -1929,6 +1956,45 @@ def apply_dashboard_theme_styles():
     )
 
 
+def _configured_app_password() -> str:
+    """
+    Read optional app password from Streamlit secrets or environment.
+    If empty, password protection is disabled.
+    """
+    secret_value = ""
+    try:
+        secret_value = str(st.secrets.get("APP_PASSWORD", "")).strip()
+    except Exception:
+        secret_value = ""
+    if secret_value:
+        return secret_value
+    return str(os.getenv("APP_PASSWORD", "")).strip()
+
+
+def require_app_password() -> None:
+    """
+    Gate app access behind a single shared password when configured.
+    """
+    configured = _configured_app_password()
+    if not configured:
+        return
+
+    if st.session_state.get("authenticated", False):
+        return
+
+    st.title("Media Intelligence Dashboard")
+    st.info("This dashboard is password protected.")
+
+    entered = st.text_input("Enter password", type="password")
+    if st.button("Unlock dashboard", type="primary"):
+        if hmac.compare_digest(str(entered), configured):
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+    st.stop()
+
+
 def render_executive_summary_page(df_sent: pd.DataFrame):
     st.header("Executive Summary")
 
@@ -1966,16 +2032,31 @@ def render_executive_summary_page(df_sent: pd.DataFrame):
     st.markdown("### Narrative Overview")
     st.write(summary_text)
 
-    overall = compute_overall_score(df_sent)
-    gauge_col, metric_col = st.columns([1.3, 1])
-    with gauge_col:
-        st.markdown("### Calibrated Media Tone Gauge")
-        gauge_fig = build_overall_gauge_figure(df_sent)
-        st.pyplot(gauge_fig)
+    overall_sentence = compute_overall_score(df_sent)
+    overall_article = compute_article_overall_score(df_article_sent)
+    sentence_gauge_col, article_gauge_col, metric_col = st.columns([1, 1, 1])
+    with sentence_gauge_col:
+        st.markdown("### Calibrated Media Tone Gauge (Sentences)")
+        gauge_fig = build_overall_gauge_figure(
+            score=overall_sentence,
+            title="Calibrated Media Tone Gauge (Sentence-level)",
+            subtitle="calibrated media tone (sentences)",
+        )
+        st.pyplot(gauge_fig, use_container_width=False)
         plt.close(gauge_fig)
+    with article_gauge_col:
+        st.markdown("### Calibrated Media Tone Gauge (Articles)")
+        article_gauge_fig = build_overall_gauge_figure(
+            score=overall_article,
+            title="Calibrated Media Tone Gauge (Article-level)",
+            subtitle="calibrated media tone (articles)",
+        )
+        st.pyplot(article_gauge_fig, use_container_width=False)
+        plt.close(article_gauge_fig)
     with metric_col:
-        st.metric("Calibrated Media Tone Score", f"{overall:.1f} / 100")
-        st.caption("Gauge calibration only: Positive = +1.25 and Very Positive = +2.25; raw charts and bucket polarity remain symmetric.")
+        st.metric("Sentence Gauge Score", f"{overall_sentence:.1f} / 100")
+        st.metric("Article Gauge Score", f"{overall_article:.1f} / 100")
+        st.caption("Gauge calibration only: positive signals are lightly upweighted; raw charts and bucket polarity remain symmetric.")
         diag = compute_override_diagnostics(df_sent)
         st.metric("Total Overrides", f"{diag['override_count']}")
         st.caption(
@@ -2325,21 +2406,33 @@ def build_sentiment_wordcloud_data(df_sent, search_terms):
 
     freq = {t: df["sentence"].str.lower().str.count(t).sum() for t in terms}
 
+    # Word-cloud color calibration:
+    # - keep representation data-driven using mean sentiment weight per term
+    # - allow a modest positive presentation shift (only after enough evidence)
+    POSITIVE_SHIFT = 0.15
+    MIN_MENTIONS_FOR_COLOR = 3
+    POSITIVE_THRESHOLD = 0.35
+    NEGATIVE_THRESHOLD = -0.35
+
     colors = {}
     for t in terms:
         subset = df[df["sentence"].str.lower().str.contains(t)]
         if subset.empty:
             colors[t] = (180, 180, 180)
             continue
-        
-        pos_count = subset[subset["sentiment_display"].str.contains("Positive", na=False)]["sentiment_display"].count()
-        neg_count = subset[subset["sentiment_display"].str.contains("Negative", na=False)]["sentiment_display"].count()
 
-        POS_THRESHOLD = 3
-        NEG_THRESHOLD = 3
-        if pos_count - neg_count >= POS_THRESHOLD:
+        mention_count = int(len(subset))
+        if mention_count < MIN_MENTIONS_FOR_COLOR:
+            colors[t] = (150, 150, 150)
+            continue
+
+        sentiment_vals = subset["sentiment_display"].map(SENTIMENT_WEIGHTS).fillna(0.0)
+        mean_sentiment = float(sentiment_vals.mean())
+        calibrated = mean_sentiment + (POSITIVE_SHIFT if mean_sentiment > 0 else 0.0)
+
+        if calibrated >= POSITIVE_THRESHOLD:
             colors[t] = (0, 153, 76)
-        elif neg_count - pos_count >= NEG_THRESHOLD:
+        elif calibrated <= NEGATIVE_THRESHOLD:
             colors[t] = (204, 0, 0)
         else:
             colors[t] = (150, 150, 150)
@@ -2512,6 +2605,18 @@ def _ppt_add_subtitle(slide, subtitle_text: str):
     p.font.color.rgb = PPT_SECONDARY_RGB
 
 
+def _ppt_add_footer_key(slide):
+    footer_box = slide.shapes.add_textbox(Inches(0.45), Inches(7.05), Inches(12.45), Inches(0.28))
+    tf = footer_box.text_frame
+    tf.clear()
+    p = tf.paragraphs[0]
+    p.text = PPT_FOOTER_KEY_TEXT
+    p.font.name = "Garamond"
+    p.font.size = Pt(8)
+    p.font.color.rgb = RGBColor(95, 95, 95)
+    p.alignment = PP_ALIGN.LEFT
+
+
 def _ppt_add_bullets(
     slide,
     bullets: list,
@@ -2587,6 +2692,13 @@ def _safe_str(value, default: str = "n/a") -> str:
     return txt if txt else default
 
 
+def render_short_code_key():
+    st.markdown("---")
+    st.caption("**Short-code key (used across charts)**")
+    st.caption(BUCKET_KEY_TEXT)
+    st.caption(FINE_TOPIC_KEY_TEXT)
+
+
 def compute_overall_score(df_sent: pd.DataFrame) -> float:
     if df_sent is None or df_sent.empty:
         return 50.0
@@ -2596,12 +2708,23 @@ def compute_overall_score(df_sent: pd.DataFrame) -> float:
     return score_0_100
 
 
-def build_overall_gauge_figure(df_sent: pd.DataFrame):
-    score = compute_overall_score(df_sent)
+def compute_article_overall_score(df_article_sent: pd.DataFrame) -> float:
+    if df_article_sent is None or df_article_sent.empty or "avg_weight" not in df_article_sent.columns:
+        return 50.0
+    avg_weights = pd.to_numeric(df_article_sent["avg_weight"], errors="coerce").dropna()
+    if avg_weights.empty:
+        return 50.0
+    calibrated = avg_weights.apply(lambda x: x * 1.25 if x > 0 else x).clip(lower=-2.0, upper=2.25)
+    weighted_mean = float(calibrated.mean())
+    score_0_100 = max(0.0, min(100.0, ((weighted_mean + 2.0) / 4.0) * 100.0))
+    return score_0_100
+
+
+def build_overall_gauge_figure(score: float, title: str = "Calibrated Media Tone Gauge", subtitle: str = "calibrated media tone"):
     fig, ax = plt.subplots(figsize=(5.2, 2.8))
     fig.patch.set_facecolor("none")
     ax.set_facecolor("none")
-    ax.set_title("Calibrated Media Tone Gauge", color=PRIMARY_BLUE, fontsize=14, fontweight="bold", pad=12)
+    ax.set_title(title, color=PRIMARY_BLUE, fontsize=14, fontweight="bold", pad=12)
 
     bands = [(0, 40, "#d73027"), (40, 60, "#fdae61"), (60, 100, "#1a9850")]
     for s, e, color in bands:
@@ -2615,7 +2738,7 @@ def build_overall_gauge_figure(df_sent: pd.DataFrame):
     ax.plot([0, x], [0, y], color=PRIMARY_BLUE, linewidth=3)
     ax.scatter([0], [0], color=PRIMARY_BLUE, s=35, zorder=5)
     ax.text(0, -0.12, f"{score:.1f} / 100", ha="center", va="center", color=PRIMARY_BLUE, fontsize=14)
-    ax.text(0, -0.26, "calibrated media tone", ha="center", va="center", color=SECONDARY_BLUE, fontsize=10)
+    ax.text(0, -0.26, subtitle, ha="center", va="center", color=SECONDARY_BLUE, fontsize=10)
 
     ax.set_xlim(-1.1, 1.1)
     ax.set_ylim(-0.32, 1.1)
@@ -2744,7 +2867,11 @@ def build_storyboard_slides(df_sent: pd.DataFrame, df_article_sent: pd.DataFrame
         save_chart(chart_salience, "slide_topic_salience.png") if chart_salience is not None else None
     )
 
-    gauge_fig = build_overall_gauge_figure(df_sent)
+    gauge_fig = build_overall_gauge_figure(
+        score=overall_score,
+        title="Calibrated Media Tone Gauge (Sentence-level)",
+        subtitle="calibrated media tone (sentences)",
+    )
     gauge_path = CHART_EXPORT_DIR / "slide_gauge.png"
     gauge_fig.savefig(gauge_path, dpi=170, bbox_inches="tight", facecolor="none", transparent=True)
     plt.close(gauge_fig)
@@ -2944,6 +3071,7 @@ def export_storyboard_to_pptx(slides: list) -> bytes:
             _ppt_place_images(slide, images)
         else:
             _ppt_add_bullets(slide, bullets, left=0.75, top=1.45, width=11.8, height=5.45, font_pt=font_pt)
+        _ppt_add_footer_key(slide)
 
     buf = io.BytesIO()
     prs.save(buf)
@@ -3011,128 +3139,12 @@ def build_narrative(df_sent: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
-def render_pipeline_rerun_control():
-    st.markdown(
-        """
-        <style>
-        .pipeline-rerun-box {
-            background-color: #e8f5e9;
-            border: 1px solid #2e7d32;
-            border-radius: 8px;
-            padding: 10px 12px;
-            margin-top: 8px;
-            margin-bottom: 8px;
-        }
-        .pipeline-rerun-title {
-            color: #1b5e20;
-            font-weight: 700;
-            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-            margin-bottom: 4px;
-        }
-        .pipeline-rerun-note {
-            color: #1b5e20;
-            font-size: 12px;
-            margin-bottom: 6px;
-            font-family: Garamond, "Times New Roman", serif;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        """
-        <div class="pipeline-rerun-box">
-            <div class="pipeline-rerun-title">Pipeline Controls</div>
-            <div class="pipeline-rerun-note">Run full reclassification + metric refresh</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if "pipeline_company_name" not in st.session_state:
-        default_company = "Aviva"
-        if MASTER_JSON.exists():
-            try:
-                data = json.loads(MASTER_JSON.read_text(encoding="utf-8"))
-                default_company = str(data.get("focus_company") or default_company)
-            except Exception:
-                pass
-        st.session_state["pipeline_company_name"] = default_company
-    company_name = st.text_input(
-        "Company Name",
-        key="pipeline_company_name",
-        help="Used for pipeline metadata (focus company). Input articles use pipeline defaults unless you set an override below.",
-    )
-    if "pipeline_raw_dir" not in st.session_state:
-        st.session_state["pipeline_raw_dir"] = ""
-    raw_dir_override = st.text_input(
-        "Articles Folder (optional override)",
-        key="pipeline_raw_dir",
-        help="Optional absolute path to the .docx folder. Leave blank to use pipeline defaults / environment variables.",
-    )
-    show_debug = st.checkbox("Show rerun debug details", key="pipeline_debug_toggle", value=True)
-
-    if st.button("Rerun Pipeline", key="rerun_pipeline_btn", type="primary", use_container_width=True):
-        pipeline_script = Path(__file__).with_name("sentimentanalysis.py")
-        if not pipeline_script.exists():
-            st.error("`sentimentanalysis.py` not found in this project directory.")
-            return
-
-        with st.spinner("Running full pipeline. This may take a few minutes..."):
-            try:
-                cmd = [sys.executable, str(pipeline_script)]
-                if company_name and str(company_name).strip():
-                    cmd.extend(["--company-name", str(company_name).strip()])
-                if raw_dir_override and str(raw_dir_override).strip():
-                    cmd.extend(["--raw-dir", str(raw_dir_override).strip()])
-                # Force pipeline output to the same master.json this dashboard reads.
-                cmd.extend(["--master-json", str(MASTER_JSON.resolve())])
-
-                before_exists = MASTER_JSON.exists()
-                before_mtime = MASTER_JSON.stat().st_mtime if before_exists else None
-                result = subprocess.run(
-                    cmd,
-                    cwd=str(Path(__file__).parent),
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                after_exists = MASTER_JSON.exists()
-                after_mtime = MASTER_JSON.stat().st_mtime if after_exists else None
-
-                if show_debug:
-                    st.caption(f"Command: {' '.join(cmd)}")
-                    st.caption(f"Dashboard master path: {MASTER_JSON.resolve()}")
-                    st.caption(
-                        "Master timestamp changed: "
-                        + ("yes" if before_mtime != after_mtime and after_exists else "no")
-                    )
-
-                if result.returncode == 0:
-                    st.success("Pipeline rerun complete. Refreshing dashboard data cache...")
-                    if show_debug and result.stdout:
-                        st.code(result.stdout[-2500:], language="text")
-                    load_master.clear()
-                    st.rerun()
-                else:
-                    st.error(f"Pipeline failed with exit code {result.returncode}.")
-                    if result.stderr:
-                        st.code(result.stderr[-4000:], language="text")
-                    elif result.stdout:
-                        st.code(result.stdout[-4000:], language="text")
-            except Exception as exc:
-                st.error(f"Failed to execute pipeline: {exc}")
-
-
 def main():
     st.set_page_config(page_title="Media Intelligence Dashboard", layout="wide")
+    require_app_password()
     apply_dashboard_theme_styles()
-    header_left, header_right = st.columns([4.5, 1.5])
-    with header_left:
-        st.title("Media Intelligence Dashboard")
-        st.caption("Professional sentiment intelligence, topic governance, and storyboard export")
-    with header_right:
-        render_pipeline_rerun_control()
+    st.title("Media Intelligence Dashboard")
+    st.caption("Professional sentiment intelligence, topic governance, and storyboard export")
 
     if not MASTER_JSON.exists():
         st.error("`master.json` not found. Please run the pipeline first.")
@@ -3181,6 +3193,8 @@ def main():
         render_powerpoint_storyboard(df_sent, df_topics, bucket_sizes)
     elif page == "Narrative Export":
         render_narrative_export(df_sent)
+
+    render_short_code_key()
 
 
 if __name__ == "__main__":
