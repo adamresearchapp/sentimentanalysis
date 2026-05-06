@@ -346,8 +346,8 @@ def save_chart(chart: alt.Chart, filename: str) -> str:
             labelOverlap="greedy",
             labelColor="#111111",
             titleColor="#111111",
-            labelFont="Arial",
-            titleFont="Arial",
+            labelFont="sans-serif",
+            titleFont="sans-serif",
             labelFontSize=14,
             titleFontSize=16,
         ).configure_legend(
@@ -355,13 +355,13 @@ def save_chart(chart: alt.Chart, filename: str) -> str:
             labelLimit=AXIS_TITLE_LIMIT,
             labelColor="#111111",
             titleColor="#111111",
-            labelFont="Arial",
-            titleFont="Arial",
+            labelFont="sans-serif",
+            titleFont="sans-serif",
             labelFontSize=12,
             titleFontSize=14,
         ).configure_title(
             color="#111111",
-            font="Arial",
+            font="sans-serif",
             fontSize=20,
         ).configure_view(
             stroke="transparent",
