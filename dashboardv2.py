@@ -30,6 +30,11 @@ try:
 except ImportError:
     Image = None
 
+try:
+    import vl_convert as vlc
+except Exception:
+    vlc = None
+
 # ---------------------------------------------------------
 # DESIGN SYSTEM STANDARDISATION (Point 1)
 # ---------------------------------------------------------
@@ -319,6 +324,16 @@ def save_chart(chart: alt.Chart, filename: str) -> str:
     if not filename.lower().endswith(".png"):
         filename = f"{filename}.png"
     out_path = CHART_EXPORT_DIR / filename
+    svg_path = out_path.with_suffix(".svg")
+
+    # Avoid stale artifacts: always remove previous exports first.
+    try:
+        if out_path.exists():
+            out_path.unlink()
+        if svg_path.exists():
+            svg_path.unlink()
+    except Exception:
+        pass
 
     try:
         # Keep chart content identical to the dashboard, but make export bounds
@@ -350,12 +365,21 @@ def save_chart(chart: alt.Chart, filename: str) -> str:
         ).properties(
             autosize=alt.AutoSizeParams(type="pad", contains="padding"),
         )
+
+        # Preferred path on hosted environments: render via vl-convert directly.
+        if vlc is not None:
+            spec = chart.to_dict()
+            png_bytes = vlc.vegalite_to_png(spec, scale=EXPORT_SCALE_FACTOR)
+            out_path.write_bytes(png_bytes)
+            return str(out_path)
+
+        # Fallback when vl-convert is unavailable.
         chart.save(str(out_path), scale_factor=EXPORT_SCALE_FACTOR)
         return str(out_path)
     except Exception:
         # Fallback: attempt SVG then convert if possible, else save basic PNG
         try:
-            chart.save(str(out_path.with_suffix(".svg")))
+            chart.save(str(svg_path))
         except Exception:
             try:
                 chart.save(str(out_path))
