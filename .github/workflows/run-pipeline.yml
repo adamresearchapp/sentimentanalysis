@@ -10,7 +10,7 @@ on:
       raw_dir:
         description: "Absolute/relative docx folder path (optional)"
         required: false
-        default: ""
+        default: "articles"
       master_json:
         description: "Output master.json path (relative to repo)"
         required: false
@@ -23,6 +23,8 @@ jobs:
   run-pipeline:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
       - name: Checkout
@@ -72,6 +74,15 @@ jobs:
           fi
 
           if [ -n "${INPUT_RAW_DIR:-}" ]; then
+            if [ ! -d "${INPUT_RAW_DIR}" ]; then
+              echo "ERROR: raw_dir does not exist: ${INPUT_RAW_DIR}"
+              exit 1
+            fi
+            DOCX_COUNT=$(ls "${INPUT_RAW_DIR}"/*.docx 2>/dev/null | wc -l || true)
+            if [ "${DOCX_COUNT}" -eq 0 ]; then
+              echo "ERROR: No .docx files found in raw_dir: ${INPUT_RAW_DIR}"
+              exit 1
+            fi
             CMD+=(--raw-dir "$INPUT_RAW_DIR")
           fi
 
