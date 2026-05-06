@@ -24,6 +24,7 @@ import os
 import shutil
 import time
 import re
+import sys
 
 try:
     from PIL import Image
@@ -343,19 +344,24 @@ def save_chart(chart: alt.Chart, filename: str) -> str:
             titlePadding=AXIS_TITLE_PADDING,
             labelPadding=AXIS_LABEL_PADDING,
             labelOverlap="greedy",
-            labelColor=SECONDARY_BLUE,
-            titleColor=PRIMARY_BLUE,
+            labelColor="#111111",
+            titleColor="#111111",
+            labelFont="Arial",
+            titleFont="Arial",
             labelFontSize=14,
             titleFontSize=16,
         ).configure_legend(
             titleLimit=AXIS_TITLE_LIMIT,
             labelLimit=AXIS_TITLE_LIMIT,
-            labelColor=SECONDARY_BLUE,
-            titleColor=PRIMARY_BLUE,
+            labelColor="#111111",
+            titleColor="#111111",
+            labelFont="Arial",
+            titleFont="Arial",
             labelFontSize=12,
             titleFontSize=14,
         ).configure_title(
-            color=PRIMARY_BLUE,
+            color="#111111",
+            font="Arial",
             fontSize=20,
         ).configure_view(
             stroke="transparent",
@@ -975,6 +981,31 @@ def render_powerpoint_storyboard(df_sent, df_topics, bucket_sizes):
     Charts are cached in `./powerpoint/` and reused across exports.
     Design: neutral white theme with Helvetica/Garamond typography.
     """)
+
+    with st.expander("Export diagnostics", expanded=False):
+        st.caption("Use this to compare local vs hosted rendering environments.")
+        try:
+            altair_version = getattr(alt, "__version__", "unknown")
+        except Exception:
+            altair_version = "unknown"
+        try:
+            vl_convert_version = getattr(vlc, "__version__", "installed (version unknown)") if vlc is not None else "not installed"
+        except Exception:
+            vl_convert_version = "installed (version lookup failed)"
+        st.code(
+            "\n".join(
+                [
+                    f"python_version={sys.version.split()[0]}",
+                    f"streamlit_version={st.__version__}",
+                    f"altair_version={altair_version}",
+                    f"vl_convert_available={vlc is not None}",
+                    f"vl_convert_version={vl_convert_version}",
+                    f"export_scale_factor={EXPORT_SCALE_FACTOR}",
+                    f"chart_export_dir={CHART_EXPORT_DIR.resolve()}",
+                ]
+            ),
+            language="text",
+        )
     
     if st.button("Generate Storyboard PPTX", key="gen_pptx_btn"):
         with st.spinner("Building storyboard (this may take a minute)..."):
