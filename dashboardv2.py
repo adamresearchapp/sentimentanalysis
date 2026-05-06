@@ -327,6 +327,12 @@ def save_chart(chart: alt.Chart, filename: str) -> str:
             titleLimit=AXIS_TITLE_LIMIT,
             titlePadding=AXIS_TITLE_PADDING,
             labelPadding=AXIS_LABEL_PADDING,
+            labelOverlap="greedy",
+        ).configure_legend(
+            titleLimit=AXIS_TITLE_LIMIT,
+            labelLimit=AXIS_TITLE_LIMIT,
+        ).configure_view(
+            stroke="transparent",
         ).properties(
             autosize=alt.AutoSizeParams(type="pad", contains="padding"),
         )
@@ -1893,6 +1899,11 @@ def build_topic_salience_bar_chart(df_sent: pd.DataFrame, top_n: int = 8):
 
     df = salience.head(top_n).copy()
     df["topic_graph"] = df["topic_name"].map(TOPIC_GRAPH_LABEL).fillna(df["topic_name"])
+    known_labels = [TOPIC_GRAPH_LABEL[t] for t in TOPIC_DEFINITIONS.keys() if t in TOPIC_GRAPH_LABEL]
+    present = set(df["topic_graph"].astype(str))
+    topic_domain = [lab for lab in known_labels if lab in present] + sorted(
+        present.difference(known_labels), key=str
+    )
 
     chart = (
         alt.Chart(df)
@@ -1911,7 +1922,7 @@ def build_topic_salience_bar_chart(df_sent: pd.DataFrame, top_n: int = 8):
             ),
             y=alt.Y(
                 "topic_graph:N",
-                sort="-x",
+                sort=topic_domain,
                 axis=alt.Axis(
                     title="Fine topic (code)",
                     labelLimit=AXIS_TITLE_LIMIT,
@@ -2118,44 +2129,7 @@ def render_executive_summary_page(df_sent: pd.DataFrame):
     st.markdown("### Polarity by Bucket")
 
     if not df_polarity.empty:
-        chart_pol = (
-            alt.Chart(df_polarity)
-            .mark_bar()
-            .encode(
-                x=alt.X(
-                    "bucket_short:N",
-                    sort="-y",
-                    axis=alt.Axis(
-                        title="Bucket (code)",
-                        labelPadding=AXIS_LABEL_PADDING,
-                        titlePadding=AXIS_TITLE_PADDING,
-                    ),
-                ),
-                y=alt.Y(
-                    "polarity:Q",
-                    axis=alt.Axis(
-                        title="Polarity Score",
-                        labelPadding=AXIS_LABEL_PADDING,
-                        titlePadding=AXIS_TITLE_PADDING,
-                        offset=8,
-                        tickSize=6,
-                    ),
-                ),
-                color=alt.condition(
-                    alt.datum.polarity > 0,
-                    alt.value("#2ca02c"),
-                    alt.value("#d62728"),
-                ),
-                tooltip=[
-                    "topic_bucket",
-                    "polarity",
-                    "positive_percent",
-                    "negative_percent",
-                    "neutral_percent",
-                ],
-            )
-            .properties(title="Bucket Polarity")
-        )
+        chart_pol = build_bucket_polarity_bar_chart(df_polarity)
         st.altair_chart(chart_pol, use_container_width=True)
     else:
         st.write("No polarity data available.")
@@ -2262,44 +2236,7 @@ def render_topic_buckets_page(df_sent: pd.DataFrame, df_topics: pd.DataFrame, bu
     st.markdown("### Polarity by Bucket")
 
     if not df_polarity.empty:
-        chart_pol = (
-            alt.Chart(df_polarity)
-            .mark_bar()
-            .encode(
-                x=alt.X(
-                    "bucket_short:N",
-                    sort="-y",
-                    axis=alt.Axis(
-                        title="Bucket (code)",
-                        labelPadding=AXIS_LABEL_PADDING,
-                        titlePadding=AXIS_TITLE_PADDING,
-                    ),
-                ),
-                y=alt.Y(
-                    "polarity:Q",
-                    axis=alt.Axis(
-                        title="Polarity Score",
-                        labelPadding=AXIS_LABEL_PADDING,
-                        titlePadding=AXIS_TITLE_PADDING,
-                        offset=8,
-                        tickSize=6,
-                    ),
-                ),
-                color=alt.condition(
-                    alt.datum.polarity > 0,
-                    alt.value("#2ca02c"),
-                    alt.value("#d62728"),
-                ),
-                tooltip=[
-                    "topic_bucket",
-                    "polarity",
-                    "positive_percent",
-                    "negative_percent",
-                    "neutral_percent",
-                ],
-            )
-            .properties(title="Bucket Polarity")
-        )
+        chart_pol = build_bucket_polarity_bar_chart(df_polarity)
         st.altair_chart(chart_pol, use_container_width=True)
     else:
         st.write("No polarity scores to display.")
