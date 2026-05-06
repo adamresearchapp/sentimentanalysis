@@ -58,6 +58,29 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Preflight diagnostics
+        env:
+          INPUT_RAW_DIR: ${{ github.event.inputs.raw_dir }}
+        run: |
+          set -euo pipefail
+          echo "Repository root:"
+          pwd
+          echo ""
+          echo "Top-level files/folders:"
+          ls -la
+          echo ""
+          echo "Configured raw_dir: ${INPUT_RAW_DIR:-<empty>}"
+          if [ -n "${INPUT_RAW_DIR:-}" ]; then
+            if [ -d "${INPUT_RAW_DIR}" ]; then
+              echo "raw_dir exists. Listing files:"
+              ls -la "${INPUT_RAW_DIR}" || true
+              echo "docx count:"
+              ls "${INPUT_RAW_DIR}"/*.docx 2>/dev/null | wc -l || true
+            else
+              echo "raw_dir does not exist."
+            fi
+          fi
+
       - name: Run pipeline
         env:
           INPUT_COMPANY_NAME: ${{ github.event.inputs.company_name }}
@@ -87,7 +110,24 @@ jobs:
           fi
 
           echo "Running: ${CMD[*]}"
-          "${CMD[@]}"
+          set +e
+          "${CMD[@]}" 2>&1 | tee pipeline.log
+          EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+          if [ "${EXIT_CODE}" -ne 0 ]; then
+            echo "Pipeline failed with exit code ${EXIT_CODE}"
+            echo "Last 120 lines of pipeline.log:"
+            tail -n 120 pipeline.log || true
+            exit "${EXIT_CODE}"
+          fi
+
+      - name: Upload pipeline log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-log
+          path: pipeline.log
+          if-no-files-found: ignore
 
       - name: Commit updated outputs
         env:
