@@ -572,7 +572,7 @@ def export_bucket_sentiment_bubble_png(df_sent: pd.DataFrame, filename: str) -> 
         for xi, sent in enumerate(matrix.columns):
             rows.append({"x": xi, "y": yi, "bucket": bucket, "sentiment": sent, "percent": matrix.loc[bucket, sent]})
     d = pd.DataFrame(rows)
-    fig, ax = plt.subplots(figsize=(8.8, 5.2))
+    fig, ax = plt.subplots(figsize=(9.8, 5.8))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     colors = [SENTIMENT_COLORS[s] for s in d["sentiment"]]
@@ -580,6 +580,10 @@ def export_bucket_sentiment_bubble_png(df_sent: pd.DataFrame, filename: str) -> 
     ax.set_xticks(range(len(matrix.columns)), matrix.columns)
     ax.set_yticks(range(len(matrix.index)), matrix.index)
     ax.invert_yaxis()
+    ax.set_xlim(-0.35, len(matrix.columns) - 0.65)
+    ax.set_ylim(len(matrix.index) - 0.55, -0.45)
+    ax.tick_params(axis="x", pad=8)
+    ax.tick_params(axis="y", pad=8)
     _style_mpl_axis(ax, "Bucket x Sentiment Bubble View", "Sentiment", "Bucket (code)")
     return _save_mpl_export(fig, filename)
 
