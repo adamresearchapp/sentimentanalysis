@@ -27,9 +27,11 @@ import re
 import sys
 
 try:
-    from PIL import Image
+    from PIL import Image, ImageDraw, ImageFont
 except ImportError:
     Image = None
+    ImageDraw = None
+    ImageFont = None
 
 try:
     import vl_convert as vlc
@@ -339,11 +341,14 @@ def save_chart(chart: alt.Chart, filename: str) -> str:
     try:
         # Keep chart content identical to the dashboard, but make export bounds
         # include titles/axis labels so PowerPoint PNGs are self-contained.
-        chart = chart.configure_axis(
+        chart = chart.properties(
+            width=EXPORT_CHART_WIDTH,
+            height=EXPORT_CHART_HEIGHT,
+        ).configure_axis(
             titleLimit=AXIS_TITLE_LIMIT,
             titlePadding=AXIS_TITLE_PADDING,
             labelPadding=AXIS_LABEL_PADDING,
-            labelOverlap="greedy",
+            labelOverlap=False,
             labelColor="#111111",
             titleColor="#111111",
             labelFont="sans-serif",
@@ -377,10 +382,12 @@ def save_chart(chart: alt.Chart, filename: str) -> str:
             spec = chart.to_dict()
             png_bytes = vlc.vegalite_to_png(spec, scale=EXPORT_SCALE_FACTOR)
             out_path.write_bytes(png_bytes)
+            _overlay_export_labels_from_spec(out_path, spec)
             return str(out_path)
 
         # Fallback when vl-convert is unavailable.
         chart.save(str(out_path), scale_factor=EXPORT_SCALE_FACTOR)
+        _overlay_export_labels_from_spec(out_path, chart.to_dict())
         return str(out_path)
     except Exception:
         # Fallback: attempt SVG then convert if possible, else save basic PNG
@@ -408,6 +415,116 @@ def save_chart(chart: alt.Chart, filename: str) -> str:
                 except Exception:
                     pass
         return str(out_path)
+
+
+def _overlay_export_labels_from_spec(image_path: Path, spec: dict) -> None:
+    """
+    Hard fallback for hosted renderers: draw key labels directly on the exported PNG.
+    This preserves readability in PPT even when Vega export drops text layers.
+    """
+    if Image is None or ImageDraw is None or ImageFont is None:
+        return
+    if not isinstance(spec, dict) or not image_path.exists():
+        return
+
+    try:
+        with Image.open(image_path).convert("RGBA") as im:
+            draw = ImageDraw.Draw(im)
+            font_title = ImageFont.load_default()
+            font_axis = ImageFont.load_default()
+            font_tick = ImageFont.load_default()
+            w, h = im.size
+
+            def _extract_xy_encoding(s: dict):
+                enc = s.get("encoding", {}) if isinstance(s, dict) else {}
+                if enc.get("x") or enc.get("y"):
+                    return enc
+                for layer in s.get("layer", []) if isinstance(s, dict) else []:
+                    lenc = layer.get("encoding", {}) if isinstance(layer, dict) else {}
+                    if lenc.get("x") or lenc.get("y"):
+                        return lenc
+                return {}
+
+            def _extract_data_values(s: dict):
+                data = s.get("data", {}) if isinstance(s, dict) else {}
+                vals = data.get("values", [])
+                if isinstance(vals, list) and vals:
+                    return vals
+                for layer in s.get("layer", []) if isinstance(s, dict) else []:
+                    ldata = layer.get("data", {}) if isinstance(layer, dict) else {}
+                    lvals = ldata.get("values", [])
+                    if isinstance(lvals, list) and lvals:
+                        return lvals
+                return []
+
+            def _axis_title(chan: dict, fallback: str):
+                if not isinstance(chan, dict):
+                    return fallback
+                axis = chan.get("axis", {}) if isinstance(chan.get("axis", {}), dict) else {}
+                return str(axis.get("title") or fallback or "")
+
+            def _field_name(chan: dict):
+                if not isinstance(chan, dict):
+                    return ""
+                field = str(chan.get("field", "")).strip()
+                if field:
+                    return field
+                shorthand = str(chan.get("shorthand", "")).strip()
+                if ":" in shorthand:
+                    return shorthand.split(":")[0].strip()
+                return shorthand
+
+            def _ordered_unique(values):
+                seen = set()
+                out = []
+                for v in values:
+                    key = str(v)
+                    if key not in seen:
+                        seen.add(key)
+                        out.append(key)
+                return out
+
+            title_text = str(spec.get("title", "")).strip()
+            enc = _extract_xy_encoding(spec)
+            x_enc = enc.get("x", {}) if isinstance(enc, dict) else {}
+            y_enc = enc.get("y", {}) if isinstance(enc, dict) else {}
+            x_field = _field_name(x_enc)
+            y_field = _field_name(y_enc)
+            x_title = _axis_title(x_enc, x_field)
+            y_title = _axis_title(y_enc, y_field)
+
+            values = _extract_data_values(spec)
+            x_labels = []
+            y_labels = []
+            if isinstance(values, list) and values:
+                if x_field:
+                    x_labels = _ordered_unique([row.get(x_field) for row in values if isinstance(row, dict) and x_field in row])
+                if y_field:
+                    y_labels = _ordered_unique([row.get(y_field) for row in values if isinstance(row, dict) and y_field in row])
+
+            # Draw title and axis titles.
+            if title_text:
+                draw.text((max(20, int(0.03 * w)), 10), title_text, fill=(17, 17, 17, 255), font=font_title)
+            if x_title:
+                draw.text((int(0.45 * w), h - 24), x_title, fill=(17, 17, 17, 255), font=font_axis)
+            if y_title:
+                draw.text((8, int(0.50 * h)), y_title, fill=(17, 17, 17, 255), font=font_axis)
+
+            # Draw category labels for nominal axes (best-effort).
+            if x_labels:
+                n = len(x_labels)
+                for i, lbl in enumerate(x_labels):
+                    x = int((i + 0.5) * (w / max(n, 1)))
+                    draw.text((max(5, x - 16), h - 44), str(lbl)[:14], fill=(17, 17, 17, 255), font=font_tick)
+            if y_labels:
+                n = len(y_labels)
+                for i, lbl in enumerate(y_labels):
+                    y = int((i + 0.5) * (h / max(n, 1)))
+                    draw.text((8, max(28, y - 6)), str(lbl)[:14], fill=(17, 17, 17, 255), font=font_tick)
+
+            im.save(image_path)
+    except Exception:
+        return
 
 
 
