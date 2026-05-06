@@ -1479,7 +1479,7 @@ def build_sentence_distribution_chart(df_sent: pd.DataFrame):
         range=[SENTIMENT_COLORS[s] for s in SENTIMENT_ORDER],
     )
 
-    chart = (
+    bars = (
         alt.Chart(df)
         .mark_bar()
         .encode(
@@ -1499,7 +1499,16 @@ def build_sentence_distribution_chart(df_sent: pd.DataFrame):
             ),
             tooltip=["sentiment_display", "count"],
         )
-    ).properties(
+    )
+
+    labels = bars.mark_text(
+        dy=-8,
+        color="#111111",
+        fontSize=13,
+        font="sans-serif",
+    ).encode(text=alt.Text("count:Q", format=".0f"))
+
+    chart = (bars + labels).properties(
         title="Sentence Sentiment Distribution",
         width=DEFAULT_CHART_WIDTH,
         height=DEFAULT_CHART_HEIGHT,
@@ -1537,7 +1546,7 @@ def build_article_tone_chart(df_article_sent: pd.DataFrame):
         range=[tone_colors[t] for t in tone_order],
     )
 
-    chart = (
+    bars = (
         alt.Chart(df)
         .mark_bar()
         .encode(
@@ -1557,7 +1566,16 @@ def build_article_tone_chart(df_article_sent: pd.DataFrame):
             ),
             tooltip=["overall_tone", "count"],
         )
-    ).properties(
+    )
+
+    labels = bars.mark_text(
+        dy=-8,
+        color="#111111",
+        fontSize=13,
+        font="sans-serif",
+    ).encode(text=alt.Text("count:Q", format=".0f"))
+
+    chart = (bars + labels).properties(
         title="Article Tone Distribution",
         width=DEFAULT_CHART_WIDTH,
         height=DEFAULT_CHART_HEIGHT,
@@ -1631,7 +1649,7 @@ def build_bucket_sizes_chart(bucket_sizes: pd.DataFrame):
     df["bucket_short"] = df["topic_bucket"].map(BUCKET_SHORT)
     bucket_domain = [BUCKET_SHORT[b] for b in BUCKET_ORDER if b in BUCKET_SHORT]
 
-    chart = (
+    bars = (
         alt.Chart(df)
         .mark_bar(color=SECONDARY_BLUE)
         .encode(
@@ -1646,7 +1664,16 @@ def build_bucket_sizes_chart(bucket_sizes: pd.DataFrame):
             ),
             tooltip=["topic_bucket", "bucket_short", "size"],
         )
-    ).properties(
+    )
+
+    labels = bars.mark_text(
+        dy=-8,
+        color="#111111",
+        fontSize=13,
+        font="sans-serif",
+    ).encode(text=alt.Text("size:Q", format=".0f"))
+
+    chart = (bars + labels).properties(
         title="Bucket Sizes",
         width=DEFAULT_CHART_WIDTH,
         height=DEFAULT_CHART_HEIGHT,
@@ -1699,6 +1726,10 @@ def bucket_balance_bubble(df_sent: pd.DataFrame):
         table["label_y"] = table["avg_intensity"] + offsets
     else:
         table["label_y"] = table["avg_intensity"]
+    table["bubble_label"] = table.apply(
+        lambda r: f"{r['bucket_short']} | n={int(r['total_count'])} | net={int(r['net_balance'])}",
+        axis=1,
+    )
 
     base = alt.Chart(table).encode(
         x=alt.X(
@@ -1750,11 +1781,12 @@ def bucket_balance_bubble(df_sent: pd.DataFrame):
             baseline="middle",
             align="left",
             dx=10,
-            fontSize=12,
-            color=PRIMARY_BLUE,
+            fontSize=13,
+            font="sans-serif",
+            color="#111111",
             strokeWidth=0.8,
         ).encode(
-            text=alt.Text("bucket_short:N", title=None),
+            text=alt.Text("bubble_label:N", title=None),
             y=alt.Y("label_y:Q"),
         )
     )
@@ -1794,6 +1826,7 @@ def bucket_sentiment_heatmap(df_sent: pd.DataFrame):
     pivot = pivot.merge(totals, on="topic_bucket")
     pivot["percent"] = (pivot["count"] / pivot["total"]) * 100
     pivot["bucket_short"] = pivot["topic_bucket"].map(BUCKET_SHORT)
+    pivot["bubble_label"] = pivot["percent"].map(lambda v: f"{v:.0f}%")
 
     chart = (
         alt.Chart(pivot)
@@ -1875,7 +1908,7 @@ def bucket_sentiment_bubble(df_sent: pd.DataFrame):
         range=[SENTIMENT_COLORS[s] for s in SENTIMENT_ORDER],
     )
 
-    chart = (
+    bubbles = (
         alt.Chart(pivot)
         .mark_circle(opacity=0.85, stroke="black", strokeWidth=0.2)
         .encode(
@@ -1916,11 +1949,30 @@ def bucket_sentiment_bubble(df_sent: pd.DataFrame):
                 "count",
                 "total",
             ],
-        ).properties(
-            title="Bucket x Sentiment Bubble View",
-            width=DEFAULT_CHART_WIDTH,
-            height=DEFAULT_CHART_HEIGHT,
         )
+    )
+
+    labels = (
+        alt.Chart(pivot)
+        .mark_text(
+            color="#111111",
+            font="sans-serif",
+            fontSize=12,
+            fontWeight="bold",
+            baseline="middle",
+            align="center",
+        )
+        .encode(
+            x=alt.X("sentiment_display:N", sort=SENTIMENT_ORDER),
+            y=alt.Y("bucket_short:N", sort=[BUCKET_SHORT[b] for b in BUCKET_ORDER if b in BUCKET_SHORT]),
+            text=alt.Text("bubble_label:N"),
+        )
+    )
+
+    chart = (bubbles + labels).properties(
+        title="Bucket x Sentiment Bubble View",
+        width=DEFAULT_CHART_WIDTH,
+        height=DEFAULT_CHART_HEIGHT,
     )
 
     return chart
@@ -2091,7 +2143,7 @@ def build_topic_salience_bar_chart(df_sent: pd.DataFrame, top_n: int = 8):
         present.difference(known_labels), key=str
     )
 
-    chart = (
+    bars = (
         alt.Chart(df)
         .mark_bar(color=SECONDARY_BLUE)
         .encode(
@@ -2128,7 +2180,17 @@ def build_topic_salience_bar_chart(df_sent: pd.DataFrame, top_n: int = 8):
                 "pct_of_bucket",
             ],
         )
-    ).properties(
+    )
+
+    labels = bars.mark_text(
+        align="left",
+        dx=5,
+        color="#111111",
+        fontSize=12,
+        font="sans-serif",
+    ).encode(text=alt.Text("pct_of_bucket:Q", format=".1f"))
+
+    chart = (bars + labels).properties(
         title="Fine Topic Salience",
         width=DEFAULT_CHART_WIDTH,
         height=max(DEFAULT_CHART_HEIGHT, 430),
