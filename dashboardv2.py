@@ -527,7 +527,20 @@ def export_bucket_balance_png(df_sent: pd.DataFrame, filename: str) -> str | Non
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     sizes = np.interp(table["total_count"], (table["total_count"].min(), table["total_count"].max()), (200, 1200)) if table["total_count"].nunique() > 1 else np.repeat(650, len(table))
-    sc = ax.scatter(table["net_balance"], table["avg_intensity"], s=sizes, c=table["avg_intensity"], cmap="RdYlGn", alpha=0.75, edgecolors="black", linewidths=0.5)
+    intensity_abs = float(np.nanmax(np.abs(table["avg_intensity"]))) if not table["avg_intensity"].empty else 1.0
+    color_limit = max(1.0, intensity_abs)
+    ax.scatter(
+        table["net_balance"],
+        table["avg_intensity"],
+        s=sizes,
+        c=table["avg_intensity"],
+        cmap="RdYlGn",
+        vmin=-color_limit,
+        vmax=color_limit,
+        alpha=0.75,
+        edgecolors="black",
+        linewidths=0.5,
+    )
     for _, row in table.iterrows():
         ax.annotate(row["bucket_short"], (row["net_balance"], row["avg_intensity"]), xytext=(8, 3), textcoords="offset points", color=PRIMARY_BLUE, fontsize=11, fontweight="bold")
     ax.axhline(0, color="#555555", linewidth=1.2)
