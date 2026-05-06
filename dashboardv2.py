@@ -9,6 +9,8 @@ from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.enum.text import PP_ALIGN
 from pptx.dml.color import RGBColor
+from pptx.oxml import OxmlElement
+from pptx.oxml.ns import qn
 import io
 import hmac
 from pathlib import Path
@@ -411,6 +413,217 @@ def save_chart(chart: alt.Chart, filename: str) -> str:
                 except Exception:
                     pass
         return str(out_path)
+
+
+def _save_mpl_export(fig, filename: str) -> str:
+    if not filename.lower().endswith(".png"):
+        filename = f"{filename}.png"
+    out_path = CHART_EXPORT_DIR / filename
+    try:
+        if out_path.exists():
+            out_path.unlink()
+    except Exception:
+        pass
+    fig.patch.set_facecolor("none")
+    fig.patch.set_alpha(0)
+    for ax in fig.axes:
+        ax.set_facecolor("none")
+        ax.patch.set_alpha(0)
+    fig.savefig(out_path, dpi=180, bbox_inches="tight", facecolor="none", edgecolor="none", transparent=True)
+    plt.close(fig)
+    return str(out_path)
+
+
+def _style_mpl_axis(ax, title: str, xlabel: str = "", ylabel: str = ""):
+    ax.set_title(title, color=PRIMARY_BLUE, fontsize=15, fontweight="bold", loc="left", pad=14)
+    ax.set_xlabel(xlabel, color=PRIMARY_BLUE, fontsize=11, labelpad=10)
+    ax.set_ylabel(ylabel, color=PRIMARY_BLUE, fontsize=11, labelpad=10)
+    ax.tick_params(axis="both", colors=SECONDARY_BLUE, labelsize=10)
+    ax.grid(axis="y", color=GRID_COLOR, linewidth=0.8, alpha=0.9)
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#B8B8B8")
+    ax.spines["bottom"].set_color("#B8B8B8")
+
+
+def export_sentence_distribution_png(df_sent: pd.DataFrame, filename: str) -> str | None:
+    if df_sent is None or df_sent.empty:
+        return None
+    df = df_sent.groupby("sentiment_display").size().reindex(SENTIMENT_ORDER, fill_value=0)
+    fig, ax = plt.subplots(figsize=(8.6, 5.0))
+    fig.patch.set_alpha(0)
+    ax.patch.set_alpha(0)
+    ax.bar(df.index, df.values, color=[SENTIMENT_COLORS[s] for s in df.index])
+    _style_mpl_axis(ax, "Sentence Sentiment Distribution", "Sentiment", "Number of sentences")
+    ax.tick_params(axis="x", rotation=0)
+    return _save_mpl_export(fig, filename)
+
+
+def export_article_tone_png(df_article_sent: pd.DataFrame, filename: str) -> str | None:
+    if df_article_sent is None or df_article_sent.empty:
+        return None
+    order = ["Negative", "Neutral", "Positive"]
+    colors = [SENTIMENT_COLORS["Negative"], SENTIMENT_COLORS["Neutral"], SENTIMENT_COLORS["Positive"]]
+    df = df_article_sent.groupby("overall_tone").size().reindex(order, fill_value=0)
+    fig, ax = plt.subplots(figsize=(8.6, 5.0))
+    fig.patch.set_alpha(0)
+    ax.patch.set_alpha(0)
+    ax.bar(df.index, df.values, color=colors)
+    _style_mpl_axis(ax, "Article Tone Distribution", "Article tone", "Number of articles")
+    return _save_mpl_export(fig, filename)
+
+
+def export_bucket_sizes_png(bucket_sizes: pd.DataFrame, filename: str) -> str | None:
+    if bucket_sizes is None or bucket_sizes.empty or "topic_bucket" not in bucket_sizes.columns:
+        return None
+    df = bucket_sizes[bucket_sizes["topic_bucket"].ne("None")].copy()
+    if df.empty:
+        return None
+    df["bucket_short"] = df["topic_bucket"].map(BUCKET_SHORT)
+    domain = [BUCKET_SHORT[b] for b in BUCKET_ORDER if b in BUCKET_SHORT]
+    series = df.set_index("bucket_short")["size"].reindex(domain).dropna()
+    fig, ax = plt.subplots(figsize=(8.6, 5.0))
+    fig.patch.set_alpha(0)
+    ax.patch.set_alpha(0)
+    ax.bar(series.index, series.values, color=SECONDARY_BLUE)
+    _style_mpl_axis(ax, "Bucket Sizes", "Bucket (code)", "Sentences")
+    return _save_mpl_export(fig, filename)
+
+
+def export_bucket_polarity_png(df_polarity: pd.DataFrame, filename: str) -> str | None:
+    if df_polarity is None or df_polarity.empty:
+        return None
+    df = df_polarity.copy()
+    if "bucket_short" not in df.columns:
+        df["bucket_short"] = df["topic_bucket"].map(BUCKET_SHORT)
+    domain = [BUCKET_SHORT[b] for b in BUCKET_ORDER if b in BUCKET_SHORT]
+    df = df.set_index("bucket_short").reindex(domain).dropna(subset=["polarity"]).reset_index()
+    fig, ax = plt.subplots(figsize=(8.6, 5.0))
+    fig.patch.set_alpha(0)
+    ax.patch.set_alpha(0)
+    colors = ["#2ca02c" if v > 0 else "#d62728" for v in df["polarity"]]
+    ax.bar(df["bucket_short"], df["polarity"], color=colors)
+    ax.axhline(0, color="#555555", linewidth=1)
+    _style_mpl_axis(ax, "Bucket Polarity", "Bucket (code)", "Polarity score")
+    return _save_mpl_export(fig, filename)
+
+
+def export_bucket_balance_png(df_sent: pd.DataFrame, filename: str) -> str | None:
+    table = build_bucket_balance_table(df_sent)
+    if table is None or table.empty:
+        return None
+    fig, ax = plt.subplots(figsize=(9.2, 5.2))
+    fig.patch.set_alpha(0)
+    ax.patch.set_alpha(0)
+    sizes = np.interp(table["total_count"], (table["total_count"].min(), table["total_count"].max()), (200, 1200)) if table["total_count"].nunique() > 1 else np.repeat(650, len(table))
+    sc = ax.scatter(table["net_balance"], table["avg_intensity"], s=sizes, c=table["avg_intensity"], cmap="RdYlGn", alpha=0.75, edgecolors="black", linewidths=0.5)
+    for _, row in table.iterrows():
+        ax.annotate(row["bucket_short"], (row["net_balance"], row["avg_intensity"]), xytext=(8, 3), textcoords="offset points", color=PRIMARY_BLUE, fontsize=11, fontweight="bold")
+    ax.axhline(0, color="#555555", linewidth=1.2)
+    ax.axvline(0, color="#555555", linewidth=1.2)
+    _style_mpl_axis(ax, "Bucket Balance Map", "Net balance", "Intensity")
+    return _save_mpl_export(fig, filename)
+
+
+def _bucket_sentiment_pivot(df_sent: pd.DataFrame) -> pd.DataFrame:
+    df = df_sent[df_sent["topic_bucket"].ne("None")].copy()
+    df = df[df["topic_bucket"].ne("Other")]
+    if df.empty:
+        return pd.DataFrame()
+    df["bucket_short"] = df["topic_bucket"].map(BUCKET_SHORT)
+    counts = df.groupby(["bucket_short", "sentiment_display"]).size().reset_index(name="count")
+    totals = counts.groupby("bucket_short")["count"].sum().rename("total")
+    counts = counts.merge(totals, on="bucket_short")
+    counts["percent"] = counts["count"] / counts["total"] * 100
+    matrix = counts.pivot(index="bucket_short", columns="sentiment_display", values="percent")
+    return matrix.reindex(index=[BUCKET_SHORT[b] for b in BUCKET_ORDER if b in BUCKET_SHORT], columns=SENTIMENT_ORDER).fillna(0)
+
+
+def export_bucket_sentiment_heatmap_png(df_sent: pd.DataFrame, filename: str) -> str | None:
+    matrix = _bucket_sentiment_pivot(df_sent)
+    if matrix.empty:
+        return None
+    fig, ax = plt.subplots(figsize=(8.8, 5.2))
+    fig.patch.set_alpha(0)
+    ax.patch.set_alpha(0)
+    im = ax.imshow(matrix.values, cmap="Blues", aspect="auto")
+    ax.set_xticks(range(len(matrix.columns)), matrix.columns, rotation=0)
+    ax.set_yticks(range(len(matrix.index)), matrix.index)
+    for i in range(matrix.shape[0]):
+        for j in range(matrix.shape[1]):
+            val = matrix.iat[i, j]
+            if val > 0:
+                ax.text(j, i, f"{val:.0f}%", ha="center", va="center", fontsize=9, color="#111111")
+    _style_mpl_axis(ax, "Bucket x Sentiment Composition", "Sentiment", "Bucket (code)")
+    fig.colorbar(im, ax=ax, fraction=0.035, pad=0.03, label="Percent of bucket")
+    return _save_mpl_export(fig, filename)
+
+
+def export_bucket_sentiment_bubble_png(df_sent: pd.DataFrame, filename: str) -> str | None:
+    matrix = _bucket_sentiment_pivot(df_sent)
+    if matrix.empty:
+        return None
+    rows = []
+    for yi, bucket in enumerate(matrix.index):
+        for xi, sent in enumerate(matrix.columns):
+            rows.append({"x": xi, "y": yi, "bucket": bucket, "sentiment": sent, "percent": matrix.loc[bucket, sent]})
+    d = pd.DataFrame(rows)
+    fig, ax = plt.subplots(figsize=(8.8, 5.2))
+    fig.patch.set_alpha(0)
+    ax.patch.set_alpha(0)
+    colors = [SENTIMENT_COLORS[s] for s in d["sentiment"]]
+    ax.scatter(d["x"], d["y"], s=d["percent"].clip(lower=0) * 18 + 20, c=colors, alpha=0.85, edgecolors="black", linewidths=0.3)
+    ax.set_xticks(range(len(matrix.columns)), matrix.columns)
+    ax.set_yticks(range(len(matrix.index)), matrix.index)
+    ax.invert_yaxis()
+    _style_mpl_axis(ax, "Bucket x Sentiment Bubble View", "Sentiment", "Bucket (code)")
+    return _save_mpl_export(fig, filename)
+
+
+def export_topic_drift_heatmap_png(df_sent: pd.DataFrame, filename: str) -> str | None:
+    if "topic_bucket" not in df_sent.columns or "topic_name" not in df_sent.columns:
+        return None
+    df = df_sent[df_sent["topic_bucket"].ne("None")].copy()
+    df = df[df["topic_bucket"].ne("Other")]
+    if df.empty:
+        return None
+    df["bucket_short"] = df["topic_bucket"].map(BUCKET_SHORT)
+    df["topic_graph"] = df["topic_name"].map(TOPIC_GRAPH_LABEL).fillna(df["topic_name"].astype(str).str.slice(0, 24))
+    counts = df.groupby(["topic_graph", "bucket_short"]).size().reset_index(name="count")
+    totals = df.groupby("bucket_short").size().rename("bucket_total")
+    counts = counts.merge(totals, on="bucket_short")
+    counts["percent"] = counts["count"] / counts["bucket_total"] * 100
+    bucket_domain = [BUCKET_SHORT[b] for b in BUCKET_ORDER if b in BUCKET_SHORT]
+    topic_domain = [TOPIC_GRAPH_LABEL[t] for t in TOPIC_DEFINITIONS.keys() if t in TOPIC_GRAPH_LABEL and TOPIC_GRAPH_LABEL[t] in set(counts["topic_graph"])]
+    matrix = counts.pivot(index="topic_graph", columns="bucket_short", values="percent").reindex(index=topic_domain, columns=bucket_domain).fillna(0)
+    if matrix.empty:
+        return None
+    fig, ax = plt.subplots(figsize=(8.8, max(5.0, 0.45 * len(matrix.index) + 1.8)))
+    fig.patch.set_alpha(0)
+    ax.patch.set_alpha(0)
+    im = ax.imshow(matrix.values, cmap="Greens", aspect="auto", vmin=0, vmax=max(100, float(matrix.values.max())))
+    ax.set_xticks(range(len(matrix.columns)), matrix.columns)
+    ax.set_yticks(range(len(matrix.index)), matrix.index)
+    _style_mpl_axis(ax, "Topic mix within each bucket (% of bucket sentences)", "Bucket (code)", "Fine topic (code)")
+    fig.colorbar(im, ax=ax, fraction=0.035, pad=0.03, label="% of bucket")
+    return _save_mpl_export(fig, filename)
+
+
+def export_topic_salience_png(df_sent: pd.DataFrame, filename: str, top_n: int = 8) -> str | None:
+    salience = compute_topic_salience(df_sent)
+    if salience is None or salience.empty:
+        return None
+    df = salience.head(top_n).copy()
+    df["topic_graph"] = df["topic_name"].map(TOPIC_GRAPH_LABEL).fillna(df["topic_name"])
+    fig, ax = plt.subplots(figsize=(8.8, max(5.0, 0.45 * len(df) + 1.8)))
+    fig.patch.set_alpha(0)
+    ax.patch.set_alpha(0)
+    ax.barh(df["topic_graph"], df["pct_of_bucket"], color=SECONDARY_BLUE)
+    ax.invert_yaxis()
+    ax.set_xlim(0, 100)
+    _style_mpl_axis(ax, "Fine Topic Salience", "% of bucket sentences (salience)", "Fine topic (code)")
+    return _save_mpl_export(fig, filename)
 
 
 
@@ -2665,11 +2878,26 @@ def _ppt_add_picture_fit(slide, image_path: str, left_in: float, top_in: float, 
     h_in = max(0.01, px_h * scale)
 
     pic = slide.shapes.add_picture(str(p), Inches(left_in), Inches(top_in), width=Inches(w_in), height=Inches(h_in))
+    _ppt_lock_picture_aspect_ratio(pic)
+    return pic
+
+
+def _ppt_lock_picture_aspect_ratio(pic):
+    """Lock inserted PNGs so PowerPoint preserves proportions during resize/move."""
     try:
         pic.lock_aspect_ratio = True
     except Exception:
         pass
-    return pic
+
+    try:
+        cnv_pic_pr = pic._element.xpath(".//p:cNvPicPr")[0]
+        pic_locks = cnv_pic_pr.find(qn("a:picLocks"))
+        if pic_locks is None:
+            pic_locks = OxmlElement("a:picLocks")
+            cnv_pic_pr.append(pic_locks)
+        pic_locks.set("noChangeAspect", "1")
+    except Exception:
+        pass
 
 
 def _ppt_add_title(slide, title_text: str):
@@ -2937,27 +3165,15 @@ def build_storyboard_slides(df_sent: pd.DataFrame, df_article_sent: pd.DataFrame
     if "topic_bucket" in df_plot.columns:
         df_plot = df_plot[df_plot["topic_bucket"].ne("Other")]
 
-    chart_sentence = build_sentence_distribution_chart(df_sent)
-    chart_article = build_article_tone_chart(df_article_sent)
-    chart_balance = bucket_balance_bubble(df_sent)
-    chart_polarity_bar = build_bucket_polarity_bar_chart(df_polarity)
-    chart_bucket_sizes = build_bucket_sizes_chart(bucket_sizes)
-    chart_bucket_heat = bucket_sentiment_heatmap(df_plot)
-    chart_bucket_bubble = bucket_sentiment_bubble(df_plot)
-    chart_drift = topic_drift_heatmap(df_plot)
-    chart_salience = build_topic_salience_bar_chart(df_plot, top_n=8)
-
-    chart_sentence_path = save_chart(chart_sentence, "slide_sentence_distribution.png") if chart_sentence is not None else None
-    chart_article_path = save_chart(chart_article, "slide_article_distribution.png") if chart_article is not None else None
-    chart_balance_path = save_chart(chart_balance, "slide_balance_map.png") if chart_balance is not None else None
-    chart_polarity_bar_path = save_chart(chart_polarity_bar, "slide_bucket_polarity_bar.png") if chart_polarity_bar is not None else None
-    chart_bucket_sizes_path = save_chart(chart_bucket_sizes, "slide_bucket_sizes.png") if chart_bucket_sizes is not None else None
-    chart_bucket_heat_path = save_chart(chart_bucket_heat, "slide_bucket_sentiment_heatmap.png") if chart_bucket_heat is not None else None
-    chart_bucket_bubble_path = save_chart(chart_bucket_bubble, "slide_bucket_sentiment_bubble.png") if chart_bucket_bubble is not None else None
-    chart_drift_path = save_chart(chart_drift, "slide_topic_drift.png") if chart_drift is not None else None
-    chart_salience_path = (
-        save_chart(chart_salience, "slide_topic_salience.png") if chart_salience is not None else None
-    )
+    chart_sentence_path = export_sentence_distribution_png(df_sent, "slide_sentence_distribution.png")
+    chart_article_path = export_article_tone_png(df_article_sent, "slide_article_distribution.png")
+    chart_balance_path = export_bucket_balance_png(df_sent, "slide_balance_map.png")
+    chart_polarity_bar_path = export_bucket_polarity_png(df_polarity, "slide_bucket_polarity_bar.png")
+    chart_bucket_sizes_path = export_bucket_sizes_png(bucket_sizes, "slide_bucket_sizes.png")
+    chart_bucket_heat_path = export_bucket_sentiment_heatmap_png(df_plot, "slide_bucket_sentiment_heatmap.png")
+    chart_bucket_bubble_path = export_bucket_sentiment_bubble_png(df_plot, "slide_bucket_sentiment_bubble.png")
+    chart_drift_path = export_topic_drift_heatmap_png(df_plot, "slide_topic_drift.png")
+    chart_salience_path = export_topic_salience_png(df_plot, "slide_topic_salience.png", top_n=8)
 
     gauge_fig = build_overall_gauge_figure(
         score=overall_score,
