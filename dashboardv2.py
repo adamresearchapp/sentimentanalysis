@@ -432,13 +432,15 @@ def _save_mpl_export(fig, filename: str) -> str:
     for ax in fig.axes:
         ax.set_facecolor("none")
         ax.patch.set_alpha(0)
+    fig.tight_layout(pad=0.6)
     fig.savefig(out_path, dpi=180, bbox_inches="tight", facecolor="none", edgecolor="none", transparent=True)
     plt.close(fig)
     return str(out_path)
 
 
 def _style_mpl_axis(ax, title: str, xlabel: str = "", ylabel: str = ""):
-    ax.set_title(title, color=PRIMARY_BLUE, fontsize=15, fontweight="bold", loc="left", pad=14)
+    # Slide titles already describe the chart; omit in-PNG titles to maximise plot area.
+    ax.set_title("")
     ax.set_xlabel(xlabel, color=PRIMARY_BLUE, fontsize=11, labelpad=10)
     ax.set_ylabel(ylabel, color=PRIMARY_BLUE, fontsize=11, labelpad=10)
     ax.tick_params(axis="both", colors=SECONDARY_BLUE, labelsize=10)
@@ -550,14 +552,12 @@ def export_bucket_sentiment_heatmap_png(df_sent: pd.DataFrame, filename: str) ->
     fig, ax = plt.subplots(figsize=(8.8, 5.2))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
-    im = ax.imshow(matrix.values, cmap="Blues", aspect="auto")
+    cmap = plt.colormaps["Blues"].copy()
+    cmap.set_bad((1, 1, 1, 0))
+    masked_values = np.ma.masked_where(matrix.values == 0, matrix.values)
+    im = ax.imshow(masked_values, cmap=cmap, aspect="auto")
     ax.set_xticks(range(len(matrix.columns)), matrix.columns, rotation=0)
     ax.set_yticks(range(len(matrix.index)), matrix.index)
-    for i in range(matrix.shape[0]):
-        for j in range(matrix.shape[1]):
-            val = matrix.iat[i, j]
-            if val > 0:
-                ax.text(j, i, f"{val:.0f}%", ha="center", va="center", fontsize=9, color="#111111")
     _style_mpl_axis(ax, "Bucket x Sentiment Composition", "Sentiment", "Bucket (code)")
     fig.colorbar(im, ax=ax, fraction=0.035, pad=0.03, label="Percent of bucket")
     return _save_mpl_export(fig, filename)
@@ -605,7 +605,10 @@ def export_topic_drift_heatmap_png(df_sent: pd.DataFrame, filename: str) -> str 
     fig, ax = plt.subplots(figsize=(8.8, max(5.0, 0.45 * len(matrix.index) + 1.8)))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
-    im = ax.imshow(matrix.values, cmap="Greens", aspect="auto", vmin=0, vmax=max(100, float(matrix.values.max())))
+    cmap = plt.colormaps["Greens"].copy()
+    cmap.set_bad((1, 1, 1, 0))
+    masked_values = np.ma.masked_where(matrix.values == 0, matrix.values)
+    im = ax.imshow(masked_values, cmap=cmap, aspect="auto", vmin=0, vmax=max(100, float(matrix.values.max())))
     ax.set_xticks(range(len(matrix.columns)), matrix.columns)
     ax.set_yticks(range(len(matrix.index)), matrix.index)
     _style_mpl_axis(ax, "Topic mix within each bucket (% of bucket sentences)", "Bucket (code)", "Fine topic (code)")
