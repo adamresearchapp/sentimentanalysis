@@ -328,11 +328,25 @@ def save_chart(chart: alt.Chart, filename: str) -> str:
             titlePadding=AXIS_TITLE_PADDING,
             labelPadding=AXIS_LABEL_PADDING,
             labelOverlap="greedy",
+            labelColor=SECONDARY_BLUE,
+            titleColor=PRIMARY_BLUE,
+            labelFontSize=14,
+            titleFontSize=16,
         ).configure_legend(
             titleLimit=AXIS_TITLE_LIMIT,
             labelLimit=AXIS_TITLE_LIMIT,
+            labelColor=SECONDARY_BLUE,
+            titleColor=PRIMARY_BLUE,
+            labelFontSize=12,
+            titleFontSize=14,
+        ).configure_title(
+            color=PRIMARY_BLUE,
+            fontSize=20,
         ).configure_view(
             stroke="transparent",
+            fill="transparent",
+        ).configure(
+            background="transparent",
         ).properties(
             autosize=alt.AutoSizeParams(type="pad", contains="padding"),
         )
@@ -2824,6 +2838,7 @@ def build_storyboard_slides(df_sent: pd.DataFrame, df_article_sent: pd.DataFrame
     slides = []
     slides.append(_storyboard_taxonomy_slide_payload())
     overall_score = compute_overall_score(df_sent)
+    overall_article_score = compute_article_overall_score(df_article_sent)
     pos, neg = get_global_sentiment_drivers(df_sent, top_n=3)
     diag = compute_override_diagnostics(df_sent)
     bucket_summaries = generate_bucket_summary(df_sent)
@@ -2859,22 +2874,36 @@ def build_storyboard_slides(df_sent: pd.DataFrame, df_article_sent: pd.DataFrame
         title="Calibrated Media Tone Gauge (Sentence-level)",
         subtitle="calibrated media tone (sentences)",
     )
-    gauge_path = CHART_EXPORT_DIR / "slide_gauge.png"
+    gauge_path = CHART_EXPORT_DIR / "slide_gauge_sentence.png"
     gauge_fig.savefig(gauge_path, dpi=170, bbox_inches="tight", facecolor="none", transparent=True)
     plt.close(gauge_fig)
+
+    gauge_article_fig = build_overall_gauge_figure(
+        score=overall_article_score,
+        title="Calibrated Media Tone Gauge (Article-level)",
+        subtitle="calibrated media tone (articles)",
+    )
+    gauge_article_path = CHART_EXPORT_DIR / "slide_gauge_article.png"
+    gauge_article_fig.savefig(gauge_article_path, dpi=170, bbox_inches="tight", facecolor="none", transparent=True)
+    plt.close(gauge_article_fig)
 
     slides.append({
         "title": "Executive Overview",
         "subtitle": "Sentiment and topic governance snapshot",
         "bullets": [
-            f"Calibrated media tone score: {overall_score:.1f} / 100",
+            f"Calibrated media tone (sentences): {overall_score:.1f} / 100",
+            f"Calibrated media tone (articles): {overall_article_score:.1f} / 100",
             f"Analysed sentences: {len(df_sent):,}",
             f"Analysed articles: {df_article_sent['article_id'].nunique() if not df_article_sent.empty else 0:,}",
             "Coverage is classified using 8 fine topics mapped to 4 governance buckets.",
             "Speedometer applies a modest positive calibration for cautious financial-news baselines; raw distributions and bucket polarity remain symmetric.",
             "Sentence-level sentiment drives polarity and intensity. Article-level tone aggregates sentence signals.",
         ],
-        "images": [str(gauge_path)] if gauge_path.exists() else [],
+        "images": [
+            str(p)
+            for p in [gauge_path, gauge_article_path]
+            if p.exists()
+        ],
     })
 
     slides.append({
