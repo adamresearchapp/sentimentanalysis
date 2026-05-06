@@ -4,6 +4,7 @@ numpy
 matplotlib
 seaborn
 altair
+vl-convert-python
 wordcloud
 pillow
 python-pptx
@@ -13,3 +14,5 @@ scikit-learn
 sentence-transformers
 transformers
 torch
+sentencepiece
+tiktoken
