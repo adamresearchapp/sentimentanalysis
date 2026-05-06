@@ -1018,6 +1018,7 @@ def render_powerpoint_storyboard(df_sent, df_topics, bucket_sizes):
                 slides = build_storyboard_slides(df_sent, df_article_sent, df_polarity, bucket_sizes)
                 pptx_bytes = export_storyboard_to_pptx(slides)
                 st.success(f"✓ Storyboard built — {len(slides)} slides")
+                render_export_png_preview(slides)
                 st.download_button(
                     "📥 Download PowerPoint",
                     data=pptx_bytes,
@@ -1026,6 +1027,28 @@ def render_powerpoint_storyboard(df_sent, df_topics, bucket_sizes):
                 )
             except Exception as e:
                 st.error(f"Failed to build storyboard: {e}")
+
+
+def render_export_png_preview(slides: list):
+    image_rows = []
+    for slide_idx, slide in enumerate(slides or [], start=1):
+        for image_path in slide.get("images", []) or []:
+            p = Path(str(image_path))
+            if p.exists():
+                image_rows.append((slide_idx, slide.get("title", f"Slide {slide_idx}"), p))
+
+    if not image_rows:
+        return
+
+    with st.expander("Export PNG preview", expanded=True):
+        st.caption("These are the exact PNG files inserted into the PowerPoint download.")
+        for i in range(0, len(image_rows), 2):
+            cols = st.columns(2)
+            for col, row in zip(cols, image_rows[i:i + 2]):
+                slide_idx, slide_title, image_path = row
+                with col.container():
+                    st.caption(f"Slide {slide_idx}: {slide_title}")
+                    st.image(str(image_path), use_container_width=True)
 
 def render_narrative_export(df_sent):
     st.header("Narrative Export")
@@ -2789,7 +2812,9 @@ def compute_article_overall_score(df_article_sent: pd.DataFrame) -> float:
 def build_overall_gauge_figure(score: float, title: str = "Calibrated Media Tone Gauge", subtitle: str = "calibrated media tone"):
     fig, ax = plt.subplots(figsize=(5.2, 2.8))
     fig.patch.set_facecolor("none")
+    fig.patch.set_alpha(0)
     ax.set_facecolor("none")
+    ax.patch.set_alpha(0)
     ax.set_title(title, color=PRIMARY_BLUE, fontsize=14, fontweight="bold", pad=12)
 
     bands = [(0, 40, "#d73027"), (40, 60, "#fdae61"), (60, 100, "#1a9850")]
@@ -2940,7 +2965,7 @@ def build_storyboard_slides(df_sent: pd.DataFrame, df_article_sent: pd.DataFrame
         subtitle="calibrated media tone (sentences)",
     )
     gauge_path = CHART_EXPORT_DIR / "slide_gauge_sentence.png"
-    gauge_fig.savefig(gauge_path, dpi=170, bbox_inches="tight", facecolor="none", transparent=True)
+    gauge_fig.savefig(gauge_path, dpi=170, bbox_inches="tight", facecolor="none", edgecolor="none", transparent=True)
     plt.close(gauge_fig)
 
     gauge_article_fig = build_overall_gauge_figure(
@@ -2949,7 +2974,7 @@ def build_storyboard_slides(df_sent: pd.DataFrame, df_article_sent: pd.DataFrame
         subtitle="calibrated media tone (articles)",
     )
     gauge_article_path = CHART_EXPORT_DIR / "slide_gauge_article.png"
-    gauge_article_fig.savefig(gauge_article_path, dpi=170, bbox_inches="tight", facecolor="none", transparent=True)
+    gauge_article_fig.savefig(gauge_article_path, dpi=170, bbox_inches="tight", facecolor="none", edgecolor="none", transparent=True)
     plt.close(gauge_article_fig)
 
     slides.append({
