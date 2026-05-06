@@ -441,8 +441,13 @@ def _save_mpl_export(fig, filename: str) -> str:
 def _style_mpl_axis(ax, title: str, xlabel: str = "", ylabel: str = ""):
     # Slide titles already describe the chart; omit in-PNG titles to maximise plot area.
     ax.set_title("")
-    ax.set_xlabel(xlabel, color=PRIMARY_BLUE, fontsize=11, labelpad=10)
-    ax.set_ylabel(ylabel, color=PRIMARY_BLUE, fontsize=11, labelpad=10)
+    axis_title_font = {
+        "family": "DejaVu Sans",
+        "size": 11,
+        "weight": "bold",
+    }
+    ax.set_xlabel(xlabel, color=PRIMARY_BLUE, fontdict=axis_title_font, labelpad=10)
+    ax.set_ylabel(ylabel, color=PRIMARY_BLUE, fontdict=axis_title_font, labelpad=10)
     ax.tick_params(axis="both", colors=SECONDARY_BLUE, labelsize=10)
     ax.grid(axis="y", color=GRID_COLOR, linewidth=0.8, alpha=0.9)
     ax.set_axisbelow(True)
