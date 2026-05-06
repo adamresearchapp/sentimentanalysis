@@ -24,6 +24,7 @@ import pandas as pd
 import streamlit as st
 from wordcloud import WordCloud 
 import matplotlib.pyplot as plt
+from matplotlib.colors import TwoSlopeNorm
 import numpy as np
 import os
 import shutil
@@ -529,14 +530,14 @@ def export_bucket_balance_png(df_sent: pd.DataFrame, filename: str) -> str | Non
     ax.patch.set_alpha(0)
     sizes = np.interp(table["total_count"], (table["total_count"].min(), table["total_count"].max()), (200, 1200)) if table["total_count"].nunique() > 1 else np.repeat(650, len(table))
     color_min, color_max = compute_bucket_balance_color_domain(table)
+    color_norm = TwoSlopeNorm(vmin=color_min, vcenter=0, vmax=color_max)
     ax.scatter(
         table["net_balance"],
         table["avg_intensity"],
         s=sizes,
         c=table["avg_intensity"],
         cmap="RdYlGn",
-        vmin=color_min,
-        vmax=color_max,
+        norm=color_norm,
         alpha=0.88,
         edgecolors="black",
         linewidths=0.5,
