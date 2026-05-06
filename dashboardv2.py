@@ -819,6 +819,24 @@ def render_outlier_review_page(df_sent: pd.DataFrame):
     default_idx = int(flagged["global_index"].iloc[0]) if not flagged.empty and "global_index" in flagged.columns else 0
     render_manual_override_controls(df_sent, key_prefix="review_queue", default_global_index=default_idx)
 
+    st.markdown("### Override Maintenance")
+    wipe_confirm = st.checkbox(
+        "Confirm: wipe all manual sentiment/topic overrides before next pipeline refresh",
+        value=False,
+        key="wipe_overrides_confirm",
+    )
+    if st.button("Wipe all overrides", key="wipe_overrides_btn", type="secondary"):
+        if not wipe_confirm:
+            st.warning("Tick the confirmation checkbox first to wipe overrides.")
+        else:
+            ok, message = clear_all_overrides_in_master()
+            if ok:
+                st.success(f"✓ {message}")
+                st.info("Overrides are now cleared in `master.json`. The next pipeline run will start from a clean override state.")
+                st.rerun()
+            else:
+                st.error(f"✗ {message}")
+
 
 def apply_override_to_master(global_index: int, sentiment_override: str, topic_override: str):
     try:
@@ -833,6 +851,37 @@ def apply_override_to_master(global_index: int, sentiment_override: str, topic_o
         return False, f"Global index {global_index} not found in master.json."
     except Exception as exc:
         return False, f"Failed to apply override: {exc}"
+
+
+def clear_all_overrides_in_master():
+    try:
+        master = json.loads(MASTER_JSON.read_text(encoding="utf-8"))
+        sentences = master.get("sentences", [])
+        if not isinstance(sentences, list):
+            return False, "master.json has no valid `sentences` list."
+
+        changed = 0
+        for s in sentences:
+            if not isinstance(s, dict):
+                continue
+            had_override = bool(
+                s.get("manual_sentiment_override") is not None
+                or s.get("manual_topic_override") is not None
+                or s.get("manual_sentiment_override_applied") is True
+                or s.get("manual_topic_override_applied") is True
+            )
+            s["manual_sentiment_override"] = None
+            s["manual_topic_override"] = None
+            s["manual_sentiment_override_applied"] = False
+            s["manual_topic_override_applied"] = False
+            if had_override:
+                changed += 1
+
+        MASTER_JSON.write_text(json.dumps(master, indent=2), encoding="utf-8")
+        load_master.clear()
+        return True, f"Cleared overrides on {changed} sentence row(s)."
+    except Exception as exc:
+        return False, f"Failed to clear overrides: {exc}"
 
 
 def render_manual_override_controls(df_sent: pd.DataFrame, key_prefix: str = "override", default_global_index: int = 0):
