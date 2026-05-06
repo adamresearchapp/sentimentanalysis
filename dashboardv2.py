@@ -27,11 +27,9 @@ import re
 import sys
 
 try:
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image
 except ImportError:
     Image = None
-    ImageDraw = None
-    ImageFont = None
 
 try:
     import vl_convert as vlc
@@ -382,12 +380,10 @@ def save_chart(chart: alt.Chart, filename: str) -> str:
             spec = chart.to_dict()
             png_bytes = vlc.vegalite_to_png(spec, scale=EXPORT_SCALE_FACTOR)
             out_path.write_bytes(png_bytes)
-            _overlay_export_labels_from_spec(out_path, spec)
             return str(out_path)
 
         # Fallback when vl-convert is unavailable.
         chart.save(str(out_path), scale_factor=EXPORT_SCALE_FACTOR)
-        _overlay_export_labels_from_spec(out_path, chart.to_dict())
         return str(out_path)
     except Exception:
         # Fallback: attempt SVG then convert if possible, else save basic PNG
@@ -415,116 +411,6 @@ def save_chart(chart: alt.Chart, filename: str) -> str:
                 except Exception:
                     pass
         return str(out_path)
-
-
-def _overlay_export_labels_from_spec(image_path: Path, spec: dict) -> None:
-    """
-    Hard fallback for hosted renderers: draw key labels directly on the exported PNG.
-    This preserves readability in PPT even when Vega export drops text layers.
-    """
-    if Image is None or ImageDraw is None or ImageFont is None:
-        return
-    if not isinstance(spec, dict) or not image_path.exists():
-        return
-
-    try:
-        with Image.open(image_path).convert("RGBA") as im:
-            draw = ImageDraw.Draw(im)
-            font_title = ImageFont.load_default()
-            font_axis = ImageFont.load_default()
-            font_tick = ImageFont.load_default()
-            w, h = im.size
-
-            def _extract_xy_encoding(s: dict):
-                enc = s.get("encoding", {}) if isinstance(s, dict) else {}
-                if enc.get("x") or enc.get("y"):
-                    return enc
-                for layer in s.get("layer", []) if isinstance(s, dict) else []:
-                    lenc = layer.get("encoding", {}) if isinstance(layer, dict) else {}
-                    if lenc.get("x") or lenc.get("y"):
-                        return lenc
-                return {}
-
-            def _extract_data_values(s: dict):
-                data = s.get("data", {}) if isinstance(s, dict) else {}
-                vals = data.get("values", [])
-                if isinstance(vals, list) and vals:
-                    return vals
-                for layer in s.get("layer", []) if isinstance(s, dict) else []:
-                    ldata = layer.get("data", {}) if isinstance(layer, dict) else {}
-                    lvals = ldata.get("values", [])
-                    if isinstance(lvals, list) and lvals:
-                        return lvals
-                return []
-
-            def _axis_title(chan: dict, fallback: str):
-                if not isinstance(chan, dict):
-                    return fallback
-                axis = chan.get("axis", {}) if isinstance(chan.get("axis", {}), dict) else {}
-                return str(axis.get("title") or fallback or "")
-
-            def _field_name(chan: dict):
-                if not isinstance(chan, dict):
-                    return ""
-                field = str(chan.get("field", "")).strip()
-                if field:
-                    return field
-                shorthand = str(chan.get("shorthand", "")).strip()
-                if ":" in shorthand:
-                    return shorthand.split(":")[0].strip()
-                return shorthand
-
-            def _ordered_unique(values):
-                seen = set()
-                out = []
-                for v in values:
-                    key = str(v)
-                    if key not in seen:
-                        seen.add(key)
-                        out.append(key)
-                return out
-
-            title_text = str(spec.get("title", "")).strip()
-            enc = _extract_xy_encoding(spec)
-            x_enc = enc.get("x", {}) if isinstance(enc, dict) else {}
-            y_enc = enc.get("y", {}) if isinstance(enc, dict) else {}
-            x_field = _field_name(x_enc)
-            y_field = _field_name(y_enc)
-            x_title = _axis_title(x_enc, x_field)
-            y_title = _axis_title(y_enc, y_field)
-
-            values = _extract_data_values(spec)
-            x_labels = []
-            y_labels = []
-            if isinstance(values, list) and values:
-                if x_field:
-                    x_labels = _ordered_unique([row.get(x_field) for row in values if isinstance(row, dict) and x_field in row])
-                if y_field:
-                    y_labels = _ordered_unique([row.get(y_field) for row in values if isinstance(row, dict) and y_field in row])
-
-            # Draw title and axis titles.
-            if title_text:
-                draw.text((max(20, int(0.03 * w)), 10), title_text, fill=(17, 17, 17, 255), font=font_title)
-            if x_title:
-                draw.text((int(0.45 * w), h - 24), x_title, fill=(17, 17, 17, 255), font=font_axis)
-            if y_title:
-                draw.text((8, int(0.50 * h)), y_title, fill=(17, 17, 17, 255), font=font_axis)
-
-            # Draw category labels for nominal axes (best-effort).
-            if x_labels:
-                n = len(x_labels)
-                for i, lbl in enumerate(x_labels):
-                    x = int((i + 0.5) * (w / max(n, 1)))
-                    draw.text((max(5, x - 16), h - 44), str(lbl)[:14], fill=(17, 17, 17, 255), font=font_tick)
-            if y_labels:
-                n = len(y_labels)
-                for i, lbl in enumerate(y_labels):
-                    y = int((i + 0.5) * (h / max(n, 1)))
-                    draw.text((8, max(28, y - 6)), str(lbl)[:14], fill=(17, 17, 17, 255), font=font_tick)
-
-            im.save(image_path)
-    except Exception:
-        return
 
 
 
@@ -1501,14 +1387,7 @@ def build_sentence_distribution_chart(df_sent: pd.DataFrame):
         )
     )
 
-    labels = bars.mark_text(
-        dy=-8,
-        color="#111111",
-        fontSize=13,
-        font="sans-serif",
-    ).encode(text=alt.Text("count:Q", format=".0f"))
-
-    chart = (bars + labels).properties(
+    chart = bars.properties(
         title="Sentence Sentiment Distribution",
         width=DEFAULT_CHART_WIDTH,
         height=DEFAULT_CHART_HEIGHT,
@@ -1568,14 +1447,7 @@ def build_article_tone_chart(df_article_sent: pd.DataFrame):
         )
     )
 
-    labels = bars.mark_text(
-        dy=-8,
-        color="#111111",
-        fontSize=13,
-        font="sans-serif",
-    ).encode(text=alt.Text("count:Q", format=".0f"))
-
-    chart = (bars + labels).properties(
+    chart = bars.properties(
         title="Article Tone Distribution",
         width=DEFAULT_CHART_WIDTH,
         height=DEFAULT_CHART_HEIGHT,
@@ -1666,14 +1538,7 @@ def build_bucket_sizes_chart(bucket_sizes: pd.DataFrame):
         )
     )
 
-    labels = bars.mark_text(
-        dy=-8,
-        color="#111111",
-        fontSize=13,
-        font="sans-serif",
-    ).encode(text=alt.Text("size:Q", format=".0f"))
-
-    chart = (bars + labels).properties(
+    chart = bars.properties(
         title="Bucket Sizes",
         width=DEFAULT_CHART_WIDTH,
         height=DEFAULT_CHART_HEIGHT,
@@ -1726,11 +1591,6 @@ def bucket_balance_bubble(df_sent: pd.DataFrame):
         table["label_y"] = table["avg_intensity"] + offsets
     else:
         table["label_y"] = table["avg_intensity"]
-    table["bubble_label"] = table.apply(
-        lambda r: f"{r['bucket_short']} | n={int(r['total_count'])} | net={int(r['net_balance'])}",
-        axis=1,
-    )
-
     base = alt.Chart(table).encode(
         x=alt.X(
             "net_balance:Q",
@@ -1781,12 +1641,11 @@ def bucket_balance_bubble(df_sent: pd.DataFrame):
             baseline="middle",
             align="left",
             dx=10,
-            fontSize=13,
-            font="sans-serif",
-            color="#111111",
+            fontSize=12,
+            color=PRIMARY_BLUE,
             strokeWidth=0.8,
         ).encode(
-            text=alt.Text("bubble_label:N", title=None),
+            text=alt.Text("bucket_short:N", title=None),
             y=alt.Y("label_y:Q"),
         )
     )
@@ -1826,7 +1685,6 @@ def bucket_sentiment_heatmap(df_sent: pd.DataFrame):
     pivot = pivot.merge(totals, on="topic_bucket")
     pivot["percent"] = (pivot["count"] / pivot["total"]) * 100
     pivot["bucket_short"] = pivot["topic_bucket"].map(BUCKET_SHORT)
-    pivot["bubble_label"] = pivot["percent"].map(lambda v: f"{v:.0f}%")
 
     chart = (
         alt.Chart(pivot)
@@ -1908,7 +1766,7 @@ def bucket_sentiment_bubble(df_sent: pd.DataFrame):
         range=[SENTIMENT_COLORS[s] for s in SENTIMENT_ORDER],
     )
 
-    bubbles = (
+    chart = (
         alt.Chart(pivot)
         .mark_circle(opacity=0.85, stroke="black", strokeWidth=0.2)
         .encode(
@@ -1949,30 +1807,11 @@ def bucket_sentiment_bubble(df_sent: pd.DataFrame):
                 "count",
                 "total",
             ],
+        ).properties(
+            title="Bucket x Sentiment Bubble View",
+            width=DEFAULT_CHART_WIDTH,
+            height=DEFAULT_CHART_HEIGHT,
         )
-    )
-
-    labels = (
-        alt.Chart(pivot)
-        .mark_text(
-            color="#111111",
-            font="sans-serif",
-            fontSize=12,
-            fontWeight="bold",
-            baseline="middle",
-            align="center",
-        )
-        .encode(
-            x=alt.X("sentiment_display:N", sort=SENTIMENT_ORDER),
-            y=alt.Y("bucket_short:N", sort=[BUCKET_SHORT[b] for b in BUCKET_ORDER if b in BUCKET_SHORT]),
-            text=alt.Text("bubble_label:N"),
-        )
-    )
-
-    chart = (bubbles + labels).properties(
-        title="Bucket x Sentiment Bubble View",
-        width=DEFAULT_CHART_WIDTH,
-        height=DEFAULT_CHART_HEIGHT,
     )
 
     return chart
@@ -2182,15 +2021,7 @@ def build_topic_salience_bar_chart(df_sent: pd.DataFrame, top_n: int = 8):
         )
     )
 
-    labels = bars.mark_text(
-        align="left",
-        dx=5,
-        color="#111111",
-        fontSize=12,
-        font="sans-serif",
-    ).encode(text=alt.Text("pct_of_bucket:Q", format=".1f"))
-
-    chart = (bars + labels).properties(
+    chart = bars.properties(
         title="Fine Topic Salience",
         width=DEFAULT_CHART_WIDTH,
         height=max(DEFAULT_CHART_HEIGHT, 430),
