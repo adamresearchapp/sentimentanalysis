@@ -135,6 +135,7 @@ EXPORT_SCALE_FACTOR = 2
 AXIS_LABEL_PADDING = 18
 AXIS_TITLE_PADDING = 24
 AXIS_TITLE_LIMIT = 1000
+BUCKET_BALANCE_COLOR_BUFFER = 0.05
 
 WORDCLOUD_EXPORT_PATH = CHART_EXPORT_DIR / "wordcloud.png"
 
@@ -527,17 +528,16 @@ def export_bucket_balance_png(df_sent: pd.DataFrame, filename: str) -> str | Non
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     sizes = np.interp(table["total_count"], (table["total_count"].min(), table["total_count"].max()), (200, 1200)) if table["total_count"].nunique() > 1 else np.repeat(650, len(table))
-    intensity_abs = float(np.nanmax(np.abs(table["avg_intensity"]))) if not table["avg_intensity"].empty else 1.0
-    color_limit = max(1.0, intensity_abs)
+    color_min, color_max = compute_bucket_balance_color_domain(table)
     ax.scatter(
         table["net_balance"],
         table["avg_intensity"],
         s=sizes,
         c=table["avg_intensity"],
         cmap="RdYlGn",
-        vmin=-color_limit,
-        vmax=color_limit,
-        alpha=0.75,
+        vmin=color_min,
+        vmax=color_max,
+        alpha=0.88,
         edgecolors="black",
         linewidths=0.5,
     )
@@ -1844,12 +1844,28 @@ def build_bucket_balance_table(df_sent: pd.DataFrame) -> pd.DataFrame:
     return agg
 
 
+def compute_bucket_balance_color_domain(table: pd.DataFrame) -> tuple[float, float]:
+    if table is None or table.empty or "avg_intensity" not in table.columns:
+        return -1.0, 1.0
+    vals = pd.to_numeric(table["avg_intensity"], errors="coerce").dropna()
+    if vals.empty:
+        return -1.0, 1.0
+
+    lowest_negative = vals[vals < 0].min()
+    highest_positive = vals[vals > 0].max()
+
+    color_min = float(lowest_negative) - BUCKET_BALANCE_COLOR_BUFFER if pd.notna(lowest_negative) else -BUCKET_BALANCE_COLOR_BUFFER
+    color_max = float(highest_positive) + BUCKET_BALANCE_COLOR_BUFFER if pd.notna(highest_positive) else BUCKET_BALANCE_COLOR_BUFFER
+    return color_min, color_max
+
+
 def bucket_balance_bubble(df_sent: pd.DataFrame):
     table = build_bucket_balance_table(df_sent)
     if table is None or table.empty:
         return None
 
     table = table.sort_values("net_balance")
+    color_min, color_max = compute_bucket_balance_color_domain(table)
     if len(table) > 1:
         offsets = np.linspace(-0.03, 0.03, len(table))
         table["label_y"] = table["avg_intensity"] + offsets
@@ -1878,7 +1894,7 @@ def bucket_balance_bubble(df_sent: pd.DataFrame):
         ),
     )
 
-    bubbles = base.mark_circle(opacity=0.7, stroke="black", strokeWidth=0.5).encode(
+    bubbles = base.mark_circle(opacity=0.88, stroke="black", strokeWidth=0.5).encode(
         size=alt.Size(
             "total_count:Q",
             title="Total sentences in bucket",
@@ -1887,7 +1903,11 @@ def bucket_balance_bubble(df_sent: pd.DataFrame):
         color=alt.Color(
             "avg_intensity:Q",
             title="Average intensity",
-            scale=alt.Scale(scheme="redyellowgreen"),
+            scale=alt.Scale(
+                domain=[color_min, 0, color_max],
+                range=["#b2182b", "#f7f7f7", "#008837"],
+                clamp=True,
+            ),
             legend=None,
         ),
         tooltip=[
