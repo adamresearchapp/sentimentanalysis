@@ -782,6 +782,7 @@ def render_outlier_review_page(df_sent: pd.DataFrame):
         )
         display_cols = [
             "global_index",
+            "article_filename",
             "sentence",
             "topic_name",
             "topic_second_best",
