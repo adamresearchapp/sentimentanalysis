@@ -1,9 +1,9 @@
-streamlit
+streamlit==1.52.2
 pandas
 numpy
 matplotlib
 seaborn
-altair
+altair==6.0.0
 vl-convert-python
 wordcloud
 pillow
