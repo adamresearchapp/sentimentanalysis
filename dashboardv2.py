@@ -139,6 +139,8 @@ AXIS_TITLE_LIMIT = 1000
 BUCKET_BALANCE_COLOR_BUFFER = 0.05
 
 WORDCLOUD_EXPORT_PATH = CHART_EXPORT_DIR / "wordcloud.png"
+PPT_EXPORT_FIG_WIDTH = 10.2
+PPT_EXPORT_FIG_HEIGHT = 5.2
 
 # ---------------------------------------------------------
 # PATH TO MASTER JSON (must match sentimentanalysis.py default)
@@ -476,7 +478,7 @@ def export_sentence_distribution_png(df_sent: pd.DataFrame, filename: str) -> st
     if total <= 0:
         return None
     df = (counts / total) * 100.0
-    fig, ax = plt.subplots(figsize=(10.2, 5.2))
+    fig, ax = plt.subplots(figsize=(PPT_EXPORT_FIG_WIDTH, PPT_EXPORT_FIG_HEIGHT))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     ax.bar(df.index, df.values, color=[SENTIMENT_COLORS[s] for s in df.index])
@@ -496,7 +498,7 @@ def export_article_tone_png(df_article_sent: pd.DataFrame, filename: str) -> str
     if total <= 0:
         return None
     df = (counts / total) * 100.0
-    fig, ax = plt.subplots(figsize=(10.2, 5.2))
+    fig, ax = plt.subplots(figsize=(PPT_EXPORT_FIG_WIDTH, PPT_EXPORT_FIG_HEIGHT))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     ax.bar(df.index, df.values, color=colors)
@@ -518,7 +520,7 @@ def export_bucket_sizes_png(bucket_sizes: pd.DataFrame, filename: str) -> str | 
     if total <= 0:
         return None
     series = (series_count / total) * 100.0
-    fig, ax = plt.subplots(figsize=(10.2, 5.2))
+    fig, ax = plt.subplots(figsize=(PPT_EXPORT_FIG_WIDTH, PPT_EXPORT_FIG_HEIGHT))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     ax.bar(series.index, series.values, color=SECONDARY_BLUE)
@@ -535,7 +537,7 @@ def export_bucket_polarity_png(df_polarity: pd.DataFrame, filename: str) -> str 
         df["bucket_short"] = df["topic_bucket"].map(BUCKET_SHORT)
     domain = [BUCKET_SHORT[b] for b in BUCKET_ORDER if b in BUCKET_SHORT]
     df = df.set_index("bucket_short").reindex(domain).dropna(subset=["polarity"]).reset_index()
-    fig, ax = plt.subplots(figsize=(8.6, 5.0))
+    fig, ax = plt.subplots(figsize=(PPT_EXPORT_FIG_WIDTH, PPT_EXPORT_FIG_HEIGHT))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     colors = ["#2ca02c" if v > 0 else "#d62728" for v in df["polarity"]]
@@ -552,7 +554,7 @@ def export_bucket_balance_png(df_sent: pd.DataFrame, filename: str, label_positi
     table = build_bucket_balance_table(df_sent)
     if table is None or table.empty:
         return None
-    fig, ax = plt.subplots(figsize=(9.2, 5.2))
+    fig, ax = plt.subplots(figsize=(PPT_EXPORT_FIG_WIDTH, PPT_EXPORT_FIG_HEIGHT))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     sizes = np.interp(table["total_count"], (table["total_count"].min(), table["total_count"].max()), (200, 1200)) if table["total_count"].nunique() > 1 else np.repeat(650, len(table))
@@ -633,7 +635,7 @@ def export_bucket_sentiment_heatmap_png(df_sent: pd.DataFrame, filename: str) ->
     matrix = _bucket_sentiment_pivot(df_sent)
     if matrix.empty:
         return None
-    fig, ax = plt.subplots(figsize=(8.8, 5.2))
+    fig, ax = plt.subplots(figsize=(PPT_EXPORT_FIG_WIDTH, PPT_EXPORT_FIG_HEIGHT))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     cmap = plt.colormaps["Blues"].copy()
@@ -656,7 +658,7 @@ def export_bucket_sentiment_bubble_png(df_sent: pd.DataFrame, filename: str) -> 
         for xi, sent in enumerate(matrix.columns):
             rows.append({"x": xi, "y": yi, "bucket": bucket, "sentiment": sent, "percent": matrix.loc[bucket, sent]})
     d = pd.DataFrame(rows)
-    fig, ax = plt.subplots(figsize=(9.8, 5.8))
+    fig, ax = plt.subplots(figsize=(PPT_EXPORT_FIG_WIDTH, PPT_EXPORT_FIG_HEIGHT))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     colors = [SENTIMENT_COLORS[s] for s in d["sentiment"]]
@@ -690,7 +692,7 @@ def export_topic_drift_heatmap_png(df_sent: pd.DataFrame, filename: str) -> str 
     matrix = counts.pivot(index="topic_graph", columns="bucket_short", values="percent").reindex(index=topic_domain, columns=bucket_domain).fillna(0)
     if matrix.empty:
         return None
-    fig, ax = plt.subplots(figsize=(8.8, max(5.0, 0.45 * len(matrix.index) + 1.8)))
+    fig, ax = plt.subplots(figsize=(PPT_EXPORT_FIG_WIDTH, max(PPT_EXPORT_FIG_HEIGHT, 0.45 * len(matrix.index) + 1.8)))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     cmap = plt.colormaps["Greens"].copy()
@@ -710,7 +712,7 @@ def export_topic_salience_png(df_sent: pd.DataFrame, filename: str, top_n: int =
         return None
     df = salience.head(top_n).copy()
     df["topic_graph"] = df["topic_name"].map(TOPIC_GRAPH_LABEL).fillna(df["topic_name"])
-    fig, ax = plt.subplots(figsize=(8.8, max(5.0, 0.45 * len(df) + 1.8)))
+    fig, ax = plt.subplots(figsize=(PPT_EXPORT_FIG_WIDTH, max(PPT_EXPORT_FIG_HEIGHT, 0.45 * len(df) + 1.8)))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     ax.barh(df["topic_graph"], df["pct_of_bucket"], color=SECONDARY_BLUE)
