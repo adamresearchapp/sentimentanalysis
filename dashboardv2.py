@@ -540,6 +540,9 @@ def export_bucket_polarity_png(df_polarity: pd.DataFrame, filename: str) -> str 
     ax.patch.set_alpha(0)
     colors = ["#2ca02c" if v > 0 else "#d62728" for v in df["polarity"]]
     ax.bar(df["bucket_short"], df["polarity"], color=colors)
+    pol_abs_max = float(pd.to_numeric(df["polarity"], errors="coerce").abs().max()) if not df.empty else 0.0
+    pol_limit = max(1.0, pol_abs_max * 1.2)
+    ax.set_ylim(-pol_limit, pol_limit)
     ax.axhline(0, color="#555555", linewidth=1)
     _style_mpl_axis(ax, "Bucket Polarity", "Bucket (code)", "Polarity score")
     return _save_mpl_export(fig, filename)
@@ -1828,6 +1831,8 @@ def build_bucket_polarity_bar_chart(df_polarity: pd.DataFrame):
         df["bucket_short"] = df["topic_bucket"].map(BUCKET_SHORT)
 
     bucket_domain = [BUCKET_SHORT[b] for b in BUCKET_ORDER if b in BUCKET_SHORT]
+    pol_abs_max = float(pd.to_numeric(df["polarity"], errors="coerce").abs().max()) if not df.empty else 0.0
+    pol_limit = max(1.0, pol_abs_max * 1.2)
 
     chart = (
         alt.Chart(df)
@@ -1847,6 +1852,7 @@ def build_bucket_polarity_bar_chart(df_polarity: pd.DataFrame):
                     offset=8,
                     tickSize=6,
                 ),
+                scale=alt.Scale(domain=[-pol_limit, pol_limit], nice=False),
             ),
             color=alt.condition(
                 alt.datum.polarity > 0,
