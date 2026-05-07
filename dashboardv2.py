@@ -454,11 +454,11 @@ def _style_mpl_axis(ax, title: str, xlabel: str = "", ylabel: str = ""):
     ax.set_title("")
     axis_title_font = {
         "family": "DejaVu Sans",
-        "size": 10,
+        "size": 11,
         "weight": "bold",
     }
-    ax.set_xlabel(xlabel, color=PRIMARY_BLUE, fontdict=axis_title_font, labelpad=8)
-    ax.set_ylabel(ylabel, color=PRIMARY_BLUE, fontdict=axis_title_font, labelpad=8)
+    ax.set_xlabel(xlabel, color=PRIMARY_BLUE, fontdict=axis_title_font, labelpad=10)
+    ax.set_ylabel(ylabel, color=PRIMARY_BLUE, fontdict=axis_title_font, labelpad=10)
     ax.tick_params(axis="both", colors=PRIMARY_BLUE, labelsize=10)
     ax.grid(axis="y", color=GRID_COLOR, linewidth=0.8, alpha=0.9)
     ax.set_axisbelow(True)
@@ -545,7 +545,7 @@ def export_bucket_polarity_png(df_polarity: pd.DataFrame, filename: str) -> str 
     return _save_mpl_export(fig, filename)
 
 
-def export_bucket_balance_png(df_sent: pd.DataFrame, filename: str) -> str | None:
+def export_bucket_balance_png(df_sent: pd.DataFrame, filename: str, label_position: str = "right") -> str | None:
     table = build_bucket_balance_table(df_sent)
     if table is None or table.empty:
         return None
@@ -571,13 +571,32 @@ def export_bucket_balance_png(df_sent: pd.DataFrame, filename: str) -> str | Non
     x_limit = max(1.0, x_abs_max * 1.2)
     y_limit = max(0.5, y_abs_max * 1.2)
     x_offset = max(0.18, 0.025 * max(x_abs_max * 2, 1.0))
+    size_by_bucket = dict(zip(table["bucket_short"], sizes))
+    pos = str(label_position or "right").strip().lower()
+    if pos not in {"right", "left", "top", "bottom"}:
+        pos = "right"
     for _, row in table.iterrows():
+        bubble_size = float(size_by_bucket.get(row["bucket_short"], 650.0))
+        delta = int(max(6, min(18, 5 + 0.24 * np.sqrt(bubble_size))))
+        if pos == "left":
+            xytext = (-delta, 2)
+            ha, va = "right", "center"
+        elif pos == "top":
+            xytext = (0, -delta)
+            ha, va = "center", "bottom"
+        elif pos == "bottom":
+            xytext = (0, delta)
+            ha, va = "center", "top"
+        else:
+            xytext = (delta, 2)
+            ha, va = "left", "center"
         ax.annotate(
             row["bucket_short"],
             (row["net_balance"], row["avg_intensity"]),
-            xytext=(6 if row["net_balance"] >= 0 else -6, 2),
+            xytext=xytext,
             textcoords="offset points",
-            ha=("left" if row["net_balance"] >= 0 else "right"),
+            ha=ha,
+            va=va,
             color=PRIMARY_BLUE,
             fontsize=11,
             fontweight="bold",
@@ -1266,6 +1285,8 @@ def render_powerpoint_storyboard(df_sent, df_topics, bucket_sizes):
     Charts are cached in `./powerpoint/` and reused across exports.
     Design: neutral white theme with Helvetica/Garamond typography.
     """)
+    st.markdown("### Quadrant Label Position")
+    balance_label_position = render_balance_label_controls(control_key="ppt_quadrant_label_position")
 
     with st.expander("Export diagnostics", expanded=False):
         st.caption("Use this to compare local vs hosted rendering environments.")
@@ -1297,7 +1318,13 @@ def render_powerpoint_storyboard(df_sent, df_topics, bucket_sizes):
             try:
                 df_article_sent = compute_article_sentiment(df_sent)
                 df_polarity = compute_bucket_polarity(df_sent)
-                slides = build_storyboard_slides(df_sent, df_article_sent, df_polarity, bucket_sizes)
+                slides = build_storyboard_slides(
+                    df_sent,
+                    df_article_sent,
+                    df_polarity,
+                    bucket_sizes,
+                    balance_label_position=balance_label_position,
+                )
                 pptx_bytes = export_storyboard_to_pptx(slides)
                 st.success(f"✓ Storyboard built — {len(slides)} slides")
                 render_export_png_preview(slides)
@@ -1937,7 +1964,7 @@ def compute_bucket_balance_color_domain(table: pd.DataFrame) -> tuple[float, flo
     return color_min, color_max
 
 
-def bucket_balance_bubble(df_sent: pd.DataFrame):
+def bucket_balance_bubble(df_sent: pd.DataFrame, label_position: str = "right"):
     table = build_bucket_balance_table(df_sent)
     if table is None or table.empty:
         return None
@@ -1950,12 +1977,40 @@ def bucket_balance_bubble(df_sent: pd.DataFrame):
     x_limit = max(1.0, x_abs_max * 1.2)
     y_limit = max(0.5, y_abs_max * 1.2)
     color_min, color_max = compute_bucket_balance_color_domain(table)
+    pos = str(label_position or "right").strip().lower()
+    if pos not in {"right", "left", "top", "bottom"}:
+        pos = "right"
     if len(table) > 1:
         offsets = np.linspace(-0.03, 0.03, len(table))
-        table["label_y"] = table["avg_intensity"] + offsets
+        table["jitter"] = offsets
     else:
-        table["label_y"] = table["avg_intensity"]
-    table["label_x"] = table["net_balance"] + np.where(table["net_balance"] >= 0, x_offset, -x_offset)
+        table["jitter"] = 0.0
+    y_offset = max(0.04, 0.08 * y_limit)
+
+    if pos == "left":
+        table["label_x"] = table["net_balance"] - x_offset
+        table["label_y"] = table["avg_intensity"] + table["jitter"]
+        label_align = "right"
+        label_baseline = "middle"
+        label_dx, label_dy = -4, 0
+    elif pos == "top":
+        table["label_x"] = table["net_balance"] + (table["jitter"] * 0.5)
+        table["label_y"] = table["avg_intensity"] + y_offset
+        label_align = "center"
+        label_baseline = "bottom"
+        label_dx, label_dy = 0, -2
+    elif pos == "bottom":
+        table["label_x"] = table["net_balance"] + (table["jitter"] * 0.5)
+        table["label_y"] = table["avg_intensity"] - y_offset
+        label_align = "center"
+        label_baseline = "top"
+        label_dx, label_dy = 0, 2
+    else:
+        table["label_x"] = table["net_balance"] + x_offset
+        table["label_y"] = table["avg_intensity"] + table["jitter"]
+        label_align = "left"
+        label_baseline = "middle"
+        label_dx, label_dy = 4, 0
     base = alt.Chart(table).encode(
         x=alt.X(
             "net_balance:Q",
@@ -2005,33 +2060,16 @@ def bucket_balance_bubble(df_sent: pd.DataFrame):
         ],
     )
 
-    labels_pos = (
+    labels = (
         base.mark_text(
-            baseline="middle",
-            align="left",
-            dx=6,
+            baseline=label_baseline,
+            align=label_align,
+            dx=label_dx,
+            dy=label_dy,
             fontSize=12,
             color=PRIMARY_BLUE,
             strokeWidth=0.8,
         )
-        .transform_filter("datum.net_balance >= 0")
-        .encode(
-            text=alt.Text("bucket_short:N", title=None),
-            x=alt.X("label_x:Q"),
-            y=alt.Y("label_y:Q"),
-        )
-    )
-
-    labels_neg = (
-        base.mark_text(
-            baseline="middle",
-            align="right",
-            dx=-6,
-            fontSize=12,
-            color=PRIMARY_BLUE,
-            strokeWidth=0.8,
-        )
-        .transform_filter("datum.net_balance < 0")
         .encode(
             text=alt.Text("bucket_short:N", title=None),
             x=alt.X("label_x:Q"),
@@ -2042,10 +2080,20 @@ def bucket_balance_bubble(df_sent: pd.DataFrame):
     vline = alt.Chart(table).mark_rule(color="#555555", strokeWidth=2).encode(x=alt.datum(0))
     hline = alt.Chart(table).mark_rule(color="#555555", strokeWidth=2).encode(y=alt.datum(0))
 
-    return (vline + hline + bubbles + labels_pos + labels_neg).properties(
+    return (vline + hline + bubbles + labels).properties(
         title="Bucket Balance Map",
         width=DEFAULT_CHART_WIDTH,
         height=DEFAULT_CHART_HEIGHT,
+    )
+
+
+def render_balance_label_controls(control_key: str = "quadrant_label_position") -> str:
+    return st.radio(
+        "Bubble label position",
+        options=["right", "left", "top", "bottom"],
+        index=0,
+        horizontal=True,
+        key=control_key,
     )
 
 
@@ -2595,9 +2643,10 @@ def render_executive_summary_page(df_sent: pd.DataFrame):
         )
 
     st.markdown("### Polarity by Bucket (Quadrant Map)")
+    balance_label_position = render_balance_label_controls(control_key="exec_quadrant_label_position")
 
     if not df_polarity.empty:
-        chart_pol = bucket_balance_bubble(df_sent)
+        chart_pol = bucket_balance_bubble(df_sent, label_position=balance_label_position)
         if chart_pol is not None:
             st.altair_chart(chart_pol, use_container_width=True)
         else:
@@ -2705,9 +2754,10 @@ def render_topic_buckets_page(df_sent: pd.DataFrame, df_topics: pd.DataFrame, bu
         st.write("No polarity data available.")
 
     st.markdown("### Polarity by Bucket (Quadrant Map)")
+    balance_label_position = render_balance_label_controls(control_key="topic_quadrant_label_position")
 
     if not df_polarity.empty:
-        chart_pol = bucket_balance_bubble(df_sent_b)
+        chart_pol = bucket_balance_bubble(df_sent_b, label_position=balance_label_position)
         if chart_pol is not None:
             st.altair_chart(chart_pol, use_container_width=True)
         else:
@@ -2738,7 +2788,7 @@ def render_topic_buckets_page(df_sent: pd.DataFrame, df_topics: pd.DataFrame, bu
 
     st.markdown("### Net Balance vs Intensity (Bubble Map)")
 
-    balance_chart = bucket_balance_bubble(df_sent_b)
+    balance_chart = bucket_balance_bubble(df_sent_b, label_position=balance_label_position)
     if balance_chart is not None:
         st.altair_chart(balance_chart, use_container_width=True)
     else:
@@ -3311,7 +3361,13 @@ def _storyboard_taxonomy_slide_payload() -> dict:
     }
 
 
-def build_storyboard_slides(df_sent: pd.DataFrame, df_article_sent: pd.DataFrame, df_polarity: pd.DataFrame, bucket_sizes: pd.DataFrame):
+def build_storyboard_slides(
+    df_sent: pd.DataFrame,
+    df_article_sent: pd.DataFrame,
+    df_polarity: pd.DataFrame,
+    bucket_sizes: pd.DataFrame,
+    balance_label_position: str = "right",
+):
     slides = []
     slides.append(_storyboard_taxonomy_slide_payload())
     overall_score = compute_overall_score(df_sent)
@@ -3326,7 +3382,11 @@ def build_storyboard_slides(df_sent: pd.DataFrame, df_article_sent: pd.DataFrame
 
     chart_sentence_path = export_sentence_distribution_png(df_sent, "slide_sentence_distribution.png")
     chart_article_path = export_article_tone_png(df_article_sent, "slide_article_distribution.png")
-    chart_balance_path = export_bucket_balance_png(df_sent, "slide_balance_map.png")
+    chart_balance_path = export_bucket_balance_png(
+        df_sent,
+        "slide_balance_map.png",
+        label_position=balance_label_position,
+    )
     chart_polarity_bar_path = export_bucket_polarity_png(df_polarity, "slide_bucket_polarity_bar.png")
     chart_bucket_sizes_path = export_bucket_sizes_png(bucket_sizes, "slide_bucket_sizes.png")
     chart_bucket_heat_path = export_bucket_sentiment_heatmap_png(df_plot, "slide_bucket_sentiment_heatmap.png")
