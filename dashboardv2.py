@@ -467,7 +467,7 @@ def export_sentence_distribution_png(df_sent: pd.DataFrame, filename: str) -> st
     if total <= 0:
         return None
     df = (counts / total) * 100.0
-    fig, ax = plt.subplots(figsize=(8.6, 5.0))
+    fig, ax = plt.subplots(figsize=(10.2, 5.2))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     ax.bar(df.index, df.values, color=[SENTIMENT_COLORS[s] for s in df.index])
@@ -487,7 +487,7 @@ def export_article_tone_png(df_article_sent: pd.DataFrame, filename: str) -> str
     if total <= 0:
         return None
     df = (counts / total) * 100.0
-    fig, ax = plt.subplots(figsize=(8.6, 5.0))
+    fig, ax = plt.subplots(figsize=(10.2, 5.2))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     ax.bar(df.index, df.values, color=colors)
@@ -504,12 +504,17 @@ def export_bucket_sizes_png(bucket_sizes: pd.DataFrame, filename: str) -> str | 
         return None
     df["bucket_short"] = df["topic_bucket"].map(BUCKET_SHORT)
     domain = [BUCKET_SHORT[b] for b in BUCKET_ORDER if b in BUCKET_SHORT]
-    series = df.set_index("bucket_short")["size"].reindex(domain).dropna()
-    fig, ax = plt.subplots(figsize=(8.6, 5.0))
+    series_count = df.set_index("bucket_short")["size"].reindex(domain).dropna()
+    total = float(series_count.sum())
+    if total <= 0:
+        return None
+    series = (series_count / total) * 100.0
+    fig, ax = plt.subplots(figsize=(10.2, 5.2))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     ax.bar(series.index, series.values, color=SECONDARY_BLUE)
-    _style_mpl_axis(ax, "Bucket Sizes", "Bucket (code)", "Sentences")
+    _style_mpl_axis(ax, "Bucket Sizes", "Bucket (code)", "Sentences (%)")
+    ax.set_ylim(0, max(100, float(series.max()) * 1.15))
     return _save_mpl_export(fig, filename)
 
 
@@ -1822,6 +1827,10 @@ def build_bucket_sizes_chart(bucket_sizes: pd.DataFrame):
         return None
 
     df["bucket_short"] = df["topic_bucket"].map(BUCKET_SHORT)
+    total_size = float(df["size"].sum())
+    if total_size <= 0:
+        return None
+    df["percent"] = (df["size"] / total_size) * 100.0
     bucket_domain = [BUCKET_SHORT[b] for b in BUCKET_ORDER if b in BUCKET_SHORT]
 
     bars = (
@@ -1834,10 +1843,15 @@ def build_bucket_sizes_chart(bucket_sizes: pd.DataFrame):
                 axis=alt.Axis(title="Bucket (code)", labelPadding=AXIS_LABEL_PADDING, titlePadding=AXIS_TITLE_PADDING),
             ),
             y=alt.Y(
-                "size:Q",
-                axis=alt.Axis(title="Sentences", labelPadding=AXIS_LABEL_PADDING, titlePadding=AXIS_TITLE_PADDING),
+                "percent:Q",
+                axis=alt.Axis(title="Sentences (%)", labelPadding=AXIS_LABEL_PADDING, titlePadding=AXIS_TITLE_PADDING),
             ),
-            tooltip=["topic_bucket", "bucket_short", "size"],
+            tooltip=[
+                "topic_bucket",
+                "bucket_short",
+                alt.Tooltip("percent:Q", format=".1f", title="Percent"),
+                alt.Tooltip("size:Q", title="Count"),
+            ],
         )
     )
 
