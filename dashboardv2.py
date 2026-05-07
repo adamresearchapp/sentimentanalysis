@@ -450,7 +450,7 @@ def _style_mpl_axis(ax, title: str, xlabel: str = "", ylabel: str = ""):
     }
     ax.set_xlabel(xlabel, color=PRIMARY_BLUE, fontdict=axis_title_font, labelpad=10)
     ax.set_ylabel(ylabel, color=PRIMARY_BLUE, fontdict=axis_title_font, labelpad=10)
-    ax.tick_params(axis="both", colors=SECONDARY_BLUE, labelsize=10)
+    ax.tick_params(axis="both", colors=PRIMARY_BLUE, labelsize=10)
     ax.grid(axis="y", color=GRID_COLOR, linewidth=0.8, alpha=0.9)
     ax.set_axisbelow(True)
     ax.spines["top"].set_visible(False)
@@ -467,7 +467,7 @@ def export_sentence_distribution_png(df_sent: pd.DataFrame, filename: str) -> st
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     ax.bar(df.index, df.values, color=[SENTIMENT_COLORS[s] for s in df.index])
-    _style_mpl_axis(ax, "Sentence Sentiment Distribution", "Sentiment", "Number of sentences")
+    _style_mpl_axis(ax, "Sentence Sentiment Distribution", "Sentiment", "Sentence count")
     ax.tick_params(axis="x", rotation=0)
     return _save_mpl_export(fig, filename)
 
@@ -482,7 +482,7 @@ def export_article_tone_png(df_article_sent: pd.DataFrame, filename: str) -> str
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     ax.bar(df.index, df.values, color=colors)
-    _style_mpl_axis(ax, "Article Tone Distribution", "Article tone", "Number of articles")
+    _style_mpl_axis(ax, "Article Tone Distribution", "Article tone", "Article count")
     return _save_mpl_export(fig, filename)
 
 
@@ -1641,7 +1641,13 @@ def build_sentence_distribution_chart(df_sent: pd.DataFrame):
             ),
             y=alt.Y(
                 "count:Q",
-                axis=alt.Axis(title="Number of sentences", labelPadding=AXIS_LABEL_PADDING, titlePadding=AXIS_TITLE_PADDING),
+                axis=alt.Axis(
+                    title="Sentence count",
+                    labelColor=PRIMARY_BLUE,
+                    labelOpacity=1,
+                    labelPadding=AXIS_LABEL_PADDING,
+                    titlePadding=AXIS_TITLE_PADDING,
+                ),
             ),
             color=alt.Color(
                 "sentiment_display:N",
@@ -1701,7 +1707,13 @@ def build_article_tone_chart(df_article_sent: pd.DataFrame):
             ),
             y=alt.Y(
                 "count:Q",
-                axis=alt.Axis(title="Number of articles", labelPadding=AXIS_LABEL_PADDING, titlePadding=AXIS_TITLE_PADDING),
+                axis=alt.Axis(
+                    title="Article count",
+                    labelColor=PRIMARY_BLUE,
+                    labelOpacity=1,
+                    labelPadding=AXIS_LABEL_PADDING,
+                    titlePadding=AXIS_TITLE_PADDING,
+                ),
             ),
             color=alt.Color(
                 "overall_tone:N",
