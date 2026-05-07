@@ -1295,6 +1295,7 @@ def render_powerpoint_storyboard(df_sent, df_topics, bucket_sizes):
     """)
     st.markdown("### Quadrant Label Position")
     balance_label_position = render_balance_label_controls(control_key="ppt_quadrant_label_position")
+    gauge_weights = render_gauge_weight_controls(control_key_prefix="ppt_gauge_weights")
 
     with st.expander("Export diagnostics", expanded=False):
         st.caption("Use this to compare local vs hosted rendering environments.")
@@ -1332,6 +1333,7 @@ def render_powerpoint_storyboard(df_sent, df_topics, bucket_sizes):
                     df_polarity,
                     bucket_sizes,
                     balance_label_position=balance_label_position,
+                    gauge_weights=gauge_weights,
                 )
                 pptx_bytes = export_storyboard_to_pptx(slides)
                 st.success(f"✓ Storyboard built — {len(slides)} slides")
@@ -3434,11 +3436,18 @@ def build_storyboard_slides(
     df_polarity: pd.DataFrame,
     bucket_sizes: pd.DataFrame,
     balance_label_position: str = "right",
+    gauge_weights: dict | None = None,
 ):
     slides = []
     slides.append(_storyboard_taxonomy_slide_payload())
-    overall_score = compute_overall_score(df_sent)
-    overall_article_score = compute_article_overall_score(df_article_sent)
+    weights_5 = gauge_weights or GAUGE_SENTIMENT_WEIGHTS
+    overall_score = compute_overall_score_with_weights(df_sent, weights_5)
+    article_weights = {
+        "Positive": weights_5["Positive"],
+        "Neutral": weights_5["Neutral"],
+        "Negative": weights_5["Negative"],
+    }
+    overall_article_score = compute_article_overall_score_with_weights(df_article_sent, article_weights)
     pos, neg = get_global_sentiment_drivers(df_sent, top_n=3)
     diag = compute_override_diagnostics(df_sent)
     bucket_summaries = generate_bucket_summary(df_sent)
