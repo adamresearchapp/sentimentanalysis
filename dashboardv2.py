@@ -2639,8 +2639,14 @@ def render_executive_summary_page(df_sent: pd.DataFrame):
     st.markdown("### Narrative Overview")
     st.write(summary_text)
 
-    overall_sentence = compute_overall_score(df_sent)
-    overall_article = compute_article_overall_score(df_article_sent)
+    gauge_weights = render_gauge_weight_controls(control_key_prefix="exec_gauge_weights")
+    overall_sentence = compute_overall_score_with_weights(df_sent, gauge_weights)
+    article_weights = {
+        "Positive": gauge_weights["Positive"],
+        "Neutral": gauge_weights["Neutral"],
+        "Negative": gauge_weights["Negative"],
+    }
+    overall_article = compute_article_overall_score_with_weights(df_article_sent, article_weights)
     sentence_gauge_col, article_gauge_col, metric_col = st.columns([1, 1, 1])
     with sentence_gauge_col:
         st.markdown("### Calibrated Media Tone Gauge (Sentences)")
@@ -3248,24 +3254,63 @@ def render_short_code_key():
 
 
 def compute_overall_score(df_sent: pd.DataFrame) -> float:
+    return compute_overall_score_with_weights(df_sent, GAUGE_SENTIMENT_WEIGHTS)
+
+
+def compute_overall_score_with_weights(df_sent: pd.DataFrame, gauge_weights: dict) -> float:
     if df_sent is None or df_sent.empty:
         return 50.0
-    weights = df_sent["sentiment_display"].map(GAUGE_SENTIMENT_WEIGHTS).fillna(0.0)
+    weights = df_sent["sentiment_display"].map(gauge_weights).fillna(0.0)
     weighted_mean = float(weights.mean())
-    score_0_100 = max(0.0, min(100.0, ((weighted_mean + 2.0) / 4.0) * 100.0))
+    min_w = min(float(v) for v in gauge_weights.values())
+    max_w = max(float(v) for v in gauge_weights.values())
+    score_0_100 = 50.0 if max_w <= min_w else max(0.0, min(100.0, ((weighted_mean - min_w) / (max_w - min_w)) * 100.0))
     return score_0_100
 
 
 def compute_article_overall_score(df_article_sent: pd.DataFrame) -> float:
+    article_weights = {
+        "Positive": GAUGE_SENTIMENT_WEIGHTS["Positive"],
+        "Neutral": GAUGE_SENTIMENT_WEIGHTS["Neutral"],
+        "Negative": GAUGE_SENTIMENT_WEIGHTS["Negative"],
+    }
+    return compute_article_overall_score_with_weights(df_article_sent, article_weights)
+
+
+def compute_article_overall_score_with_weights(df_article_sent: pd.DataFrame, article_weights: dict) -> float:
     if df_article_sent is None or df_article_sent.empty or "avg_weight" not in df_article_sent.columns:
         return 50.0
-    avg_weights = pd.to_numeric(df_article_sent["avg_weight"], errors="coerce").dropna()
-    if avg_weights.empty:
+    if "overall_tone" not in df_article_sent.columns:
         return 50.0
-    calibrated = avg_weights.apply(lambda x: x * 1.25 if x > 0 else x).clip(lower=-2.0, upper=2.25)
-    weighted_mean = float(calibrated.mean())
-    score_0_100 = max(0.0, min(100.0, ((weighted_mean + 2.0) / 4.0) * 100.0))
+    tone_weights = df_article_sent["overall_tone"].map(article_weights).dropna()
+    if tone_weights.empty:
+        return 50.0
+    weighted_mean = float(tone_weights.mean())
+    min_w = min(float(v) for v in article_weights.values())
+    max_w = max(float(v) for v in article_weights.values())
+    score_0_100 = 50.0 if max_w <= min_w else max(0.0, min(100.0, ((weighted_mean - min_w) / (max_w - min_w)) * 100.0))
     return score_0_100
+
+
+def render_gauge_weight_controls(control_key_prefix: str = "gauge_weights") -> dict:
+    with st.expander("Gauge Weights", expanded=False):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            very_positive = st.number_input("Very Positive", value=float(GAUGE_SENTIMENT_WEIGHTS["Very Positive"]), step=0.05, key=f"{control_key_prefix}_very_positive")
+            positive = st.number_input("Positive", value=float(GAUGE_SENTIMENT_WEIGHTS["Positive"]), step=0.05, key=f"{control_key_prefix}_positive")
+        with c2:
+            neutral = st.number_input("Neutral", value=float(GAUGE_SENTIMENT_WEIGHTS["Neutral"]), step=0.05, key=f"{control_key_prefix}_neutral")
+            negative = st.number_input("Negative", value=float(GAUGE_SENTIMENT_WEIGHTS["Negative"]), step=0.05, key=f"{control_key_prefix}_negative")
+        with c3:
+            very_negative = st.number_input("Very Negative", value=float(GAUGE_SENTIMENT_WEIGHTS["Very Negative"]), step=0.05, key=f"{control_key_prefix}_very_negative")
+        st.caption("These weights only affect the two gauge scores, not raw sentiment distributions or polarity charts.")
+    return {
+        "Very Positive": float(very_positive),
+        "Positive": float(positive),
+        "Neutral": float(neutral),
+        "Negative": float(negative),
+        "Very Negative": float(very_negative),
+    }
 
 
 def build_overall_gauge_figure(score: float, title: str = "Calibrated Media Tone Gauge", subtitle: str = "calibrated media tone"):
