@@ -570,14 +570,14 @@ def export_bucket_balance_png(df_sent: pd.DataFrame, filename: str, label_positi
     y_abs_max = float(pd.to_numeric(table["avg_intensity"], errors="coerce").abs().max()) if not table.empty else 0.0
     x_limit = max(1.0, x_abs_max * 1.2)
     y_limit = max(0.5, y_abs_max * 1.2)
-    x_offset = max(0.18, 0.025 * max(x_abs_max * 2, 1.0))
+    x_offset = max(0.24, 0.034 * max(x_abs_max * 2, 1.0))
     size_by_bucket = dict(zip(table["bucket_short"], sizes))
     pos = str(label_position or "right").strip().lower()
-    if pos not in {"right", "left", "top", "bottom"}:
+    if pos not in {"right", "left", "top", "bottom", "center"}:
         pos = "right"
     for _, row in table.iterrows():
         bubble_size = float(size_by_bucket.get(row["bucket_short"], 650.0))
-        delta = int(max(6, min(18, 5 + 0.24 * np.sqrt(bubble_size))))
+        delta = int(max(8, min(21, 7 + 0.26 * np.sqrt(bubble_size))))
         if pos == "left":
             xytext = (-delta, 2)
             ha, va = "right", "center"
@@ -587,6 +587,9 @@ def export_bucket_balance_png(df_sent: pd.DataFrame, filename: str, label_positi
         elif pos == "bottom":
             xytext = (0, delta)
             ha, va = "center", "top"
+        elif pos == "center":
+            xytext = (0, 0)
+            ha, va = "center", "center"
         else:
             xytext = (delta, 2)
             ha, va = "left", "center"
@@ -1971,46 +1974,52 @@ def bucket_balance_bubble(df_sent: pd.DataFrame, label_position: str = "right"):
 
     table = table.sort_values("net_balance")
     span = float(table["net_balance"].max() - table["net_balance"].min()) if len(table) > 1 else 1.0
-    x_offset = max(0.18, 0.025 * max(span, 1.0))
+    x_offset = max(0.24, 0.034 * max(span, 1.0))
     x_abs_max = float(pd.to_numeric(table["net_balance"], errors="coerce").abs().max()) if not table.empty else 0.0
     y_abs_max = float(pd.to_numeric(table["avg_intensity"], errors="coerce").abs().max()) if not table.empty else 0.0
     x_limit = max(1.0, x_abs_max * 1.2)
     y_limit = max(0.5, y_abs_max * 1.2)
     color_min, color_max = compute_bucket_balance_color_domain(table)
     pos = str(label_position or "right").strip().lower()
-    if pos not in {"right", "left", "top", "bottom"}:
+    if pos not in {"right", "left", "top", "bottom", "center"}:
         pos = "right"
     if len(table) > 1:
         offsets = np.linspace(-0.03, 0.03, len(table))
         table["jitter"] = offsets
     else:
         table["jitter"] = 0.0
-    y_offset = max(0.04, 0.08 * y_limit)
+    y_offset = max(0.05, 0.10 * y_limit)
 
     if pos == "left":
         table["label_x"] = table["net_balance"] - x_offset
         table["label_y"] = table["avg_intensity"] + table["jitter"]
         label_align = "right"
         label_baseline = "middle"
-        label_dx, label_dy = -4, 0
+        label_dx, label_dy = -6, 0
     elif pos == "top":
         table["label_x"] = table["net_balance"] + (table["jitter"] * 0.5)
         table["label_y"] = table["avg_intensity"] + y_offset
         label_align = "center"
         label_baseline = "bottom"
-        label_dx, label_dy = 0, -2
+        label_dx, label_dy = 0, -4
     elif pos == "bottom":
         table["label_x"] = table["net_balance"] + (table["jitter"] * 0.5)
         table["label_y"] = table["avg_intensity"] - y_offset
         label_align = "center"
         label_baseline = "top"
-        label_dx, label_dy = 0, 2
+        label_dx, label_dy = 0, 4
+    elif pos == "center":
+        table["label_x"] = table["net_balance"]
+        table["label_y"] = table["avg_intensity"]
+        label_align = "center"
+        label_baseline = "middle"
+        label_dx, label_dy = 0, 0
     else:
         table["label_x"] = table["net_balance"] + x_offset
         table["label_y"] = table["avg_intensity"] + table["jitter"]
         label_align = "left"
         label_baseline = "middle"
-        label_dx, label_dy = 4, 0
+        label_dx, label_dy = 6, 0
     base = alt.Chart(table).encode(
         x=alt.X(
             "net_balance:Q",
@@ -2088,13 +2097,26 @@ def bucket_balance_bubble(df_sent: pd.DataFrame, label_position: str = "right"):
 
 
 def render_balance_label_controls(control_key: str = "quadrant_label_position") -> str:
-    return st.radio(
-        "Bubble label position",
-        options=["right", "left", "top", "bottom"],
-        index=0,
-        horizontal=True,
-        key=control_key,
-    )
+    options = ["right", "left", "top", "bottom", "center"]
+    current = st.session_state.get(control_key, "right")
+    if current not in options:
+        current = "right"
+        st.session_state[control_key] = current
+
+    st.caption("Bubble label position")
+    cols = st.columns(len(options))
+    for col, option in zip(cols, options):
+        label = option.title()
+        if col.button(
+            label,
+            key=f"{control_key}_{option}_btn",
+            type=("primary" if current == option else "secondary"),
+            use_container_width=True,
+        ):
+            st.session_state[control_key] = option
+            current = option
+
+    return current
 
 
 def bucket_sentiment_heatmap(df_sent: pd.DataFrame):
@@ -2785,14 +2807,6 @@ def render_topic_buckets_page(df_sent: pd.DataFrame, df_topics: pd.DataFrame, bu
             st.altair_chart(bubble, use_container_width=True)
         else:
             st.write("No data available for bucket bubble view.")
-
-    st.markdown("### Net Balance vs Intensity (Bubble Map)")
-
-    balance_chart = bucket_balance_bubble(df_sent_b, label_position=balance_label_position)
-    if balance_chart is not None:
-        st.altair_chart(balance_chart, use_container_width=True)
-    else:
-        st.write("No data available for balance bubble map.")
 
     st.markdown("### Topic Drift (Fine Topics → Buckets)")
     st.caption(
