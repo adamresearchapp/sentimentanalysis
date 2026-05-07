@@ -1921,7 +1921,11 @@ def bucket_balance_bubble(df_sent: pd.DataFrame):
 
     table = table.sort_values("net_balance")
     span = float(table["net_balance"].max() - table["net_balance"].min()) if len(table) > 1 else 1.0
-    x_offset = max(0.6, 0.06 * max(span, 1.0))
+    x_offset = max(0.18, 0.025 * max(span, 1.0))
+    x_abs_max = float(pd.to_numeric(table["net_balance"], errors="coerce").abs().max()) if not table.empty else 0.0
+    y_abs_max = float(pd.to_numeric(table["avg_intensity"], errors="coerce").abs().max()) if not table.empty else 0.0
+    x_limit = max(1.0, x_abs_max * 1.2)
+    y_limit = max(0.5, y_abs_max * 1.2)
     color_min, color_max = compute_bucket_balance_color_domain(table)
     if len(table) > 1:
         offsets = np.linspace(-0.03, 0.03, len(table))
@@ -1938,7 +1942,7 @@ def bucket_balance_bubble(df_sent: pd.DataFrame):
                 labelPadding=AXIS_LABEL_PADDING,
                 titlePadding=AXIS_TITLE_PADDING,
             ),
-            scale=alt.Scale(nice=True, padding=36),
+            scale=alt.Scale(domain=[-x_limit, x_limit], nice=False, padding=36),
         ),
         y=alt.Y(
             "avg_intensity:Q",
@@ -1948,7 +1952,7 @@ def bucket_balance_bubble(df_sent: pd.DataFrame):
                 labelPadding=AXIS_LABEL_PADDING,
                 titlePadding=AXIS_TITLE_PADDING,
             ),
-            scale=alt.Scale(nice=True, padding=18),
+            scale=alt.Scale(domain=[-y_limit, y_limit], nice=False, padding=18),
         ),
     )
 
