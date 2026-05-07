@@ -434,9 +434,8 @@ def _save_mpl_export(fig, filename: str) -> str:
     for ax in fig.axes:
         ax.set_facecolor("none")
         ax.patch.set_alpha(0)
-    # Reserve extra left margin so y-axis titles are never clipped in exports.
-    # Avoid bbox_inches="tight" because it can over-crop text on some hosts.
-    fig.subplots_adjust(left=0.24, right=0.99, bottom=0.12, top=0.95)
+    # Keep a modest margin without overly compressing plot area.
+    fig.subplots_adjust(left=0.17, right=0.99, bottom=0.12, top=0.95)
     fig.savefig(
         out_path,
         dpi=180,
@@ -455,11 +454,11 @@ def _style_mpl_axis(ax, title: str, xlabel: str = "", ylabel: str = ""):
     ax.set_title("")
     axis_title_font = {
         "family": "DejaVu Sans",
-        "size": 11,
+        "size": 10,
         "weight": "bold",
     }
-    ax.set_xlabel(xlabel, color=PRIMARY_BLUE, fontdict=axis_title_font, labelpad=10)
-    ax.set_ylabel(ylabel, color=PRIMARY_BLUE, fontdict=axis_title_font, labelpad=10)
+    ax.set_xlabel(xlabel, color=PRIMARY_BLUE, fontdict=axis_title_font, labelpad=8)
+    ax.set_ylabel(ylabel, color=PRIMARY_BLUE, fontdict=axis_title_font, labelpad=8)
     ax.tick_params(axis="both", colors=PRIMARY_BLUE, labelsize=10)
     ax.grid(axis="y", color=GRID_COLOR, linewidth=0.8, alpha=0.9)
     ax.set_axisbelow(True)
@@ -576,8 +575,8 @@ def export_bucket_balance_png(df_sent: pd.DataFrame, filename: str) -> str | Non
         ax.annotate(
             row["bucket_short"],
             (row["net_balance"], row["avg_intensity"]),
-            xytext=(x_offset if row["net_balance"] >= 0 else -x_offset, 3),
-            textcoords="data",
+            xytext=(6 if row["net_balance"] >= 0 else -6, 2),
+            textcoords="offset points",
             ha=("left" if row["net_balance"] >= 0 else "right"),
             color=PRIMARY_BLUE,
             fontsize=11,
