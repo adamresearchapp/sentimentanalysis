@@ -462,12 +462,17 @@ def _style_mpl_axis(ax, title: str, xlabel: str = "", ylabel: str = ""):
 def export_sentence_distribution_png(df_sent: pd.DataFrame, filename: str) -> str | None:
     if df_sent is None or df_sent.empty:
         return None
-    df = df_sent.groupby("sentiment_display").size().reindex(SENTIMENT_ORDER, fill_value=0)
+    counts = df_sent.groupby("sentiment_display").size().reindex(SENTIMENT_ORDER, fill_value=0)
+    total = int(counts.sum())
+    if total <= 0:
+        return None
+    df = (counts / total) * 100.0
     fig, ax = plt.subplots(figsize=(8.6, 5.0))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     ax.bar(df.index, df.values, color=[SENTIMENT_COLORS[s] for s in df.index])
-    _style_mpl_axis(ax, "Sentence Sentiment Distribution", "Sentiment", "Sentence count")
+    _style_mpl_axis(ax, "Sentence Sentiment Distribution", "Sentiment", "Sentences (%)")
+    ax.set_ylim(0, max(100, float(df.max()) * 1.15))
     ax.tick_params(axis="x", rotation=0)
     return _save_mpl_export(fig, filename)
 
@@ -477,12 +482,17 @@ def export_article_tone_png(df_article_sent: pd.DataFrame, filename: str) -> str
         return None
     order = ["Negative", "Neutral", "Positive"]
     colors = [SENTIMENT_COLORS["Negative"], SENTIMENT_COLORS["Neutral"], SENTIMENT_COLORS["Positive"]]
-    df = df_article_sent.groupby("overall_tone").size().reindex(order, fill_value=0)
+    counts = df_article_sent.groupby("overall_tone").size().reindex(order, fill_value=0)
+    total = int(counts.sum())
+    if total <= 0:
+        return None
+    df = (counts / total) * 100.0
     fig, ax = plt.subplots(figsize=(8.6, 5.0))
     fig.patch.set_alpha(0)
     ax.patch.set_alpha(0)
     ax.bar(df.index, df.values, color=colors)
-    _style_mpl_axis(ax, "Article Tone Distribution", "Article tone", "Article count")
+    _style_mpl_axis(ax, "Article Tone Distribution", "Article tone", "Articles (%)")
+    ax.set_ylim(0, max(100, float(df.max()) * 1.15))
     return _save_mpl_export(fig, filename)
 
 
@@ -1617,6 +1627,10 @@ def build_sentence_distribution_chart(df_sent: pd.DataFrame):
         .size()
         .reset_index(name="count")
     )
+    total_count = int(df["count"].sum())
+    if total_count <= 0:
+        return None
+    df["percent"] = (df["count"] / total_count) * 100.0
 
     df["sentiment_display"] = pd.Categorical(
         df["sentiment_display"],
@@ -1640,9 +1654,9 @@ def build_sentence_distribution_chart(df_sent: pd.DataFrame):
                 axis=alt.Axis(title="Sentiment", labelPadding=AXIS_LABEL_PADDING, titlePadding=AXIS_TITLE_PADDING),
             ),
             y=alt.Y(
-                "count:Q",
+                "percent:Q",
                 axis=alt.Axis(
-                    title="Sentence count",
+                    title="Sentences (%)",
                     labelColor=PRIMARY_BLUE,
                     labelOpacity=1,
                     labelPadding=AXIS_LABEL_PADDING,
@@ -1654,7 +1668,11 @@ def build_sentence_distribution_chart(df_sent: pd.DataFrame):
                 scale=color_scale,
                 legend=None,
             ),
-            tooltip=["sentiment_display", "count"],
+            tooltip=[
+                "sentiment_display",
+                alt.Tooltip("percent:Q", format=".1f", title="Percent"),
+                alt.Tooltip("count:Q", title="Count"),
+            ],
         )
     )
 
@@ -1676,6 +1694,10 @@ def build_article_tone_chart(df_article_sent: pd.DataFrame):
         .size()
         .reset_index(name="count")
     )
+    total_count = int(df["count"].sum())
+    if total_count <= 0:
+        return None
+    df["percent"] = (df["count"] / total_count) * 100.0
 
     tone_order = ["Negative", "Neutral", "Positive"]
     df["overall_tone"] = pd.Categorical(
@@ -1706,9 +1728,9 @@ def build_article_tone_chart(df_article_sent: pd.DataFrame):
                 axis=alt.Axis(title="Article tone", labelPadding=AXIS_LABEL_PADDING, titlePadding=AXIS_TITLE_PADDING),
             ),
             y=alt.Y(
-                "count:Q",
+                "percent:Q",
                 axis=alt.Axis(
-                    title="Article count",
+                    title="Articles (%)",
                     labelColor=PRIMARY_BLUE,
                     labelOpacity=1,
                     labelPadding=AXIS_LABEL_PADDING,
@@ -1720,7 +1742,11 @@ def build_article_tone_chart(df_article_sent: pd.DataFrame):
                 scale=color_scale,
                 legend=None,
             ),
-            tooltip=["overall_tone", "count"],
+            tooltip=[
+                "overall_tone",
+                alt.Tooltip("percent:Q", format=".1f", title="Percent"),
+                alt.Tooltip("count:Q", title="Count"),
+            ],
         )
     )
 
