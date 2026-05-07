@@ -435,9 +435,17 @@ def _save_mpl_export(fig, filename: str) -> str:
         ax.set_facecolor("none")
         ax.patch.set_alpha(0)
     # Reserve extra left margin so y-axis titles are never clipped in exports.
-    fig.subplots_adjust(left=0.17, right=0.985, bottom=0.12, top=0.95)
-    fig.tight_layout(pad=0.8)
-    fig.savefig(out_path, dpi=180, bbox_inches="tight", facecolor="none", edgecolor="none", transparent=True)
+    # Avoid bbox_inches="tight" because it can over-crop text on some hosts.
+    fig.subplots_adjust(left=0.24, right=0.99, bottom=0.12, top=0.95)
+    fig.savefig(
+        out_path,
+        dpi=180,
+        bbox_inches=None,
+        pad_inches=0.15,
+        facecolor="none",
+        edgecolor="none",
+        transparent=True,
+    )
     plt.close(fig)
     return str(out_path)
 
@@ -559,8 +567,24 @@ def export_bucket_balance_png(df_sent: pd.DataFrame, filename: str) -> str | Non
         edgecolors="black",
         linewidths=0.5,
     )
+    x_abs_max = float(pd.to_numeric(table["net_balance"], errors="coerce").abs().max()) if not table.empty else 0.0
+    y_abs_max = float(pd.to_numeric(table["avg_intensity"], errors="coerce").abs().max()) if not table.empty else 0.0
+    x_limit = max(1.0, x_abs_max * 1.2)
+    y_limit = max(0.5, y_abs_max * 1.2)
+    x_offset = max(0.18, 0.025 * max(x_abs_max * 2, 1.0))
     for _, row in table.iterrows():
-        ax.annotate(row["bucket_short"], (row["net_balance"], row["avg_intensity"]), xytext=(8, 3), textcoords="offset points", color=PRIMARY_BLUE, fontsize=11, fontweight="bold")
+        ax.annotate(
+            row["bucket_short"],
+            (row["net_balance"], row["avg_intensity"]),
+            xytext=(x_offset if row["net_balance"] >= 0 else -x_offset, 3),
+            textcoords="data",
+            ha=("left" if row["net_balance"] >= 0 else "right"),
+            color=PRIMARY_BLUE,
+            fontsize=11,
+            fontweight="bold",
+        )
+    ax.set_xlim(-x_limit, x_limit)
+    ax.set_ylim(-y_limit, y_limit)
     ax.axhline(0, color="#555555", linewidth=1.2)
     ax.axvline(0, color="#555555", linewidth=1.2)
     _style_mpl_axis(ax, "Bucket Balance Map", "Net balance", "Intensity")
