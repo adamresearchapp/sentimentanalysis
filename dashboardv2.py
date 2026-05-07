@@ -434,7 +434,9 @@ def _save_mpl_export(fig, filename: str) -> str:
     for ax in fig.axes:
         ax.set_facecolor("none")
         ax.patch.set_alpha(0)
-    fig.tight_layout(pad=0.6)
+    # Reserve extra left margin so y-axis titles are never clipped in exports.
+    fig.subplots_adjust(left=0.17, right=0.985, bottom=0.12, top=0.95)
+    fig.tight_layout(pad=0.8)
     fig.savefig(out_path, dpi=180, bbox_inches="tight", facecolor="none", edgecolor="none", transparent=True)
     plt.close(fig)
     return str(out_path)
@@ -1918,12 +1920,15 @@ def bucket_balance_bubble(df_sent: pd.DataFrame):
         return None
 
     table = table.sort_values("net_balance")
+    span = float(table["net_balance"].max() - table["net_balance"].min()) if len(table) > 1 else 1.0
+    x_offset = max(0.6, 0.06 * max(span, 1.0))
     color_min, color_max = compute_bucket_balance_color_domain(table)
     if len(table) > 1:
         offsets = np.linspace(-0.03, 0.03, len(table))
         table["label_y"] = table["avg_intensity"] + offsets
     else:
         table["label_y"] = table["avg_intensity"]
+    table["label_x"] = table["net_balance"] + np.where(table["net_balance"] >= 0, x_offset, -x_offset)
     base = alt.Chart(table).encode(
         x=alt.X(
             "net_balance:Q",
@@ -1973,16 +1978,36 @@ def bucket_balance_bubble(df_sent: pd.DataFrame):
         ],
     )
 
-    labels = (
+    labels_pos = (
         base.mark_text(
             baseline="middle",
             align="left",
-            dx=10,
+            dx=6,
             fontSize=12,
             color=PRIMARY_BLUE,
             strokeWidth=0.8,
-        ).encode(
+        )
+        .transform_filter("datum.net_balance >= 0")
+        .encode(
             text=alt.Text("bucket_short:N", title=None),
+            x=alt.X("label_x:Q"),
+            y=alt.Y("label_y:Q"),
+        )
+    )
+
+    labels_neg = (
+        base.mark_text(
+            baseline="middle",
+            align="right",
+            dx=-6,
+            fontSize=12,
+            color=PRIMARY_BLUE,
+            strokeWidth=0.8,
+        )
+        .transform_filter("datum.net_balance < 0")
+        .encode(
+            text=alt.Text("bucket_short:N", title=None),
+            x=alt.X("label_x:Q"),
             y=alt.Y("label_y:Q"),
         )
     )
@@ -1990,7 +2015,7 @@ def bucket_balance_bubble(df_sent: pd.DataFrame):
     vline = alt.Chart(table).mark_rule(color="#555555", strokeWidth=2).encode(x=alt.datum(0))
     hline = alt.Chart(table).mark_rule(color="#555555", strokeWidth=2).encode(y=alt.datum(0))
 
-    return (vline + hline + bubbles + labels).properties(
+    return (vline + hline + bubbles + labels_pos + labels_neg).properties(
         title="Bucket Balance Map",
         width=DEFAULT_CHART_WIDTH,
         height=DEFAULT_CHART_HEIGHT,
@@ -2542,11 +2567,14 @@ def render_executive_summary_page(df_sent: pd.DataFrame):
             f"Avg override topic score: {diag['avg_override_topic_score']:.2f}"
         )
 
-    st.markdown("### Polarity by Bucket")
+    st.markdown("### Polarity by Bucket (Quadrant Map)")
 
     if not df_polarity.empty:
-        chart_pol = build_bucket_polarity_bar_chart(df_polarity)
-        st.altair_chart(chart_pol, use_container_width=True)
+        chart_pol = bucket_balance_bubble(df_sent)
+        if chart_pol is not None:
+            st.altair_chart(chart_pol, use_container_width=True)
+        else:
+            st.write("No polarity map data available.")
     else:
         st.write("No polarity data available.")
 
@@ -2649,11 +2677,14 @@ def render_topic_buckets_page(df_sent: pd.DataFrame, df_topics: pd.DataFrame, bu
     else:
         st.write("No polarity data available.")
 
-    st.markdown("### Polarity by Bucket")
+    st.markdown("### Polarity by Bucket (Quadrant Map)")
 
     if not df_polarity.empty:
-        chart_pol = build_bucket_polarity_bar_chart(df_polarity)
-        st.altair_chart(chart_pol, use_container_width=True)
+        chart_pol = bucket_balance_bubble(df_sent_b)
+        if chart_pol is not None:
+            st.altair_chart(chart_pol, use_container_width=True)
+        else:
+            st.write("No polarity map data available.")
     else:
         st.write("No polarity scores to display.")
 
