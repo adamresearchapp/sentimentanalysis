@@ -188,6 +188,12 @@ GAUGE_SENTIMENT_WEIGHTS = {
     "Very Negative": -2,
 }
 
+DEFAULT_ARTICLE_GAUGE_WEIGHTS = {
+    "Positive": GAUGE_SENTIMENT_WEIGHTS["Positive"],
+    "Neutral": GAUGE_SENTIMENT_WEIGHTS["Neutral"],
+    "Negative": GAUGE_SENTIMENT_WEIGHTS["Negative"],
+}
+
 SENTIMENT_COLORS = {
     "Very Negative": "#d73027",
     "Negative": "#fc8d59",
@@ -1295,7 +1301,8 @@ def render_powerpoint_storyboard(df_sent, df_topics, bucket_sizes):
     """)
     st.markdown("### Quadrant Label Position")
     balance_label_position = render_balance_label_controls(control_key="ppt_quadrant_label_position")
-    gauge_weights = render_gauge_weight_controls(control_key_prefix="ppt_gauge_weights")
+    sentence_gauge_weights = render_gauge_weight_controls(control_key_prefix="ppt_sentence_gauge_weights")
+    article_gauge_weights = render_article_gauge_weight_controls(control_key_prefix="ppt_article_gauge_weights")
 
     with st.expander("Export diagnostics", expanded=False):
         st.caption("Use this to compare local vs hosted rendering environments.")
@@ -1333,7 +1340,8 @@ def render_powerpoint_storyboard(df_sent, df_topics, bucket_sizes):
                     df_polarity,
                     bucket_sizes,
                     balance_label_position=balance_label_position,
-                    gauge_weights=gauge_weights,
+                    sentence_gauge_weights=sentence_gauge_weights,
+                    article_gauge_weights=article_gauge_weights,
                 )
                 pptx_bytes = export_storyboard_to_pptx(slides)
                 st.success(f"✓ Storyboard built — {len(slides)} slides")
@@ -2641,14 +2649,10 @@ def render_executive_summary_page(df_sent: pd.DataFrame):
     st.markdown("### Narrative Overview")
     st.write(summary_text)
 
-    gauge_weights = render_gauge_weight_controls(control_key_prefix="exec_gauge_weights")
-    overall_sentence = compute_overall_score_with_weights(df_sent, gauge_weights)
-    article_weights = {
-        "Positive": gauge_weights["Positive"],
-        "Neutral": gauge_weights["Neutral"],
-        "Negative": gauge_weights["Negative"],
-    }
-    overall_article = compute_article_overall_score_with_weights(df_article_sent, article_weights)
+    sentence_gauge_weights = render_gauge_weight_controls(control_key_prefix="exec_sentence_gauge_weights")
+    article_gauge_weights = render_article_gauge_weight_controls(control_key_prefix="exec_article_gauge_weights")
+    overall_sentence = compute_overall_score_with_weights(df_sent, sentence_gauge_weights)
+    overall_article = compute_article_overall_score_with_weights(df_article_sent, article_gauge_weights)
     sentence_gauge_col, article_gauge_col, metric_col = st.columns([1, 1, 1])
     with sentence_gauge_col:
         st.markdown("### Calibrated Media Tone Gauge (Sentences)")
@@ -3271,12 +3275,7 @@ def compute_overall_score_with_weights(df_sent: pd.DataFrame, gauge_weights: dic
 
 
 def compute_article_overall_score(df_article_sent: pd.DataFrame) -> float:
-    article_weights = {
-        "Positive": GAUGE_SENTIMENT_WEIGHTS["Positive"],
-        "Neutral": GAUGE_SENTIMENT_WEIGHTS["Neutral"],
-        "Negative": GAUGE_SENTIMENT_WEIGHTS["Negative"],
-    }
-    return compute_article_overall_score_with_weights(df_article_sent, article_weights)
+    return compute_article_overall_score_with_weights(df_article_sent, DEFAULT_ARTICLE_GAUGE_WEIGHTS)
 
 
 def compute_article_overall_score_with_weights(df_article_sent: pd.DataFrame, article_weights: dict) -> float:
@@ -3296,6 +3295,13 @@ def compute_article_overall_score_with_weights(df_article_sent: pd.DataFrame, ar
 
 def render_gauge_weight_controls(control_key_prefix: str = "gauge_weights") -> dict:
     with st.expander("Gauge Weights", expanded=False):
+        if st.button("Reset sentence gauge defaults", key=f"{control_key_prefix}_reset_defaults"):
+            st.session_state[f"{control_key_prefix}_very_positive"] = float(GAUGE_SENTIMENT_WEIGHTS["Very Positive"])
+            st.session_state[f"{control_key_prefix}_positive"] = float(GAUGE_SENTIMENT_WEIGHTS["Positive"])
+            st.session_state[f"{control_key_prefix}_neutral"] = float(GAUGE_SENTIMENT_WEIGHTS["Neutral"])
+            st.session_state[f"{control_key_prefix}_negative"] = float(GAUGE_SENTIMENT_WEIGHTS["Negative"])
+            st.session_state[f"{control_key_prefix}_very_negative"] = float(GAUGE_SENTIMENT_WEIGHTS["Very Negative"])
+            st.rerun()
         c1, c2, c3 = st.columns(3)
         with c1:
             very_positive = st.number_input("Very Positive", value=float(GAUGE_SENTIMENT_WEIGHTS["Very Positive"]), step=0.05, key=f"{control_key_prefix}_very_positive")
@@ -3305,13 +3311,35 @@ def render_gauge_weight_controls(control_key_prefix: str = "gauge_weights") -> d
             negative = st.number_input("Negative", value=float(GAUGE_SENTIMENT_WEIGHTS["Negative"]), step=0.05, key=f"{control_key_prefix}_negative")
         with c3:
             very_negative = st.number_input("Very Negative", value=float(GAUGE_SENTIMENT_WEIGHTS["Very Negative"]), step=0.05, key=f"{control_key_prefix}_very_negative")
-        st.caption("These weights only affect the two gauge scores, not raw sentiment distributions or polarity charts.")
+        st.caption("These weights affect only the sentence-level gauge score.")
     return {
         "Very Positive": float(very_positive),
         "Positive": float(positive),
         "Neutral": float(neutral),
         "Negative": float(negative),
         "Very Negative": float(very_negative),
+    }
+
+
+def render_article_gauge_weight_controls(control_key_prefix: str = "article_gauge_weights") -> dict:
+    with st.expander("Article Gauge Weights", expanded=False):
+        if st.button("Reset article gauge defaults", key=f"{control_key_prefix}_reset_defaults"):
+            st.session_state[f"{control_key_prefix}_positive"] = float(DEFAULT_ARTICLE_GAUGE_WEIGHTS["Positive"])
+            st.session_state[f"{control_key_prefix}_neutral"] = float(DEFAULT_ARTICLE_GAUGE_WEIGHTS["Neutral"])
+            st.session_state[f"{control_key_prefix}_negative"] = float(DEFAULT_ARTICLE_GAUGE_WEIGHTS["Negative"])
+            st.rerun()
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            positive = st.number_input("Positive", value=float(DEFAULT_ARTICLE_GAUGE_WEIGHTS["Positive"]), step=0.05, key=f"{control_key_prefix}_positive")
+        with c2:
+            neutral = st.number_input("Neutral", value=float(DEFAULT_ARTICLE_GAUGE_WEIGHTS["Neutral"]), step=0.05, key=f"{control_key_prefix}_neutral")
+        with c3:
+            negative = st.number_input("Negative", value=float(DEFAULT_ARTICLE_GAUGE_WEIGHTS["Negative"]), step=0.05, key=f"{control_key_prefix}_negative")
+        st.caption("These weights affect only the article-level gauge score.")
+    return {
+        "Positive": float(positive),
+        "Neutral": float(neutral),
+        "Negative": float(negative),
     }
 
 
@@ -3436,18 +3464,15 @@ def build_storyboard_slides(
     df_polarity: pd.DataFrame,
     bucket_sizes: pd.DataFrame,
     balance_label_position: str = "right",
-    gauge_weights: dict | None = None,
+    sentence_gauge_weights: dict | None = None,
+    article_gauge_weights: dict | None = None,
 ):
     slides = []
     slides.append(_storyboard_taxonomy_slide_payload())
-    weights_5 = gauge_weights or GAUGE_SENTIMENT_WEIGHTS
+    weights_5 = sentence_gauge_weights or GAUGE_SENTIMENT_WEIGHTS
+    weights_3 = article_gauge_weights or DEFAULT_ARTICLE_GAUGE_WEIGHTS
     overall_score = compute_overall_score_with_weights(df_sent, weights_5)
-    article_weights = {
-        "Positive": weights_5["Positive"],
-        "Neutral": weights_5["Neutral"],
-        "Negative": weights_5["Negative"],
-    }
-    overall_article_score = compute_article_overall_score_with_weights(df_article_sent, article_weights)
+    overall_article_score = compute_article_overall_score_with_weights(df_article_sent, weights_3)
     pos, neg = get_global_sentiment_drivers(df_sent, top_n=3)
     diag = compute_override_diagnostics(df_sent)
     bucket_summaries = generate_bucket_summary(df_sent)
