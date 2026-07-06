@@ -342,14 +342,16 @@ def _safe_hf_call(pipe, text: str):
 def _map_3way_to_5way(label: str, score: float):
     """
     Map a 3-class model output onto 5 classes using the model's confidence
-    as intensity. Confident calls (score above ~0.925) land in the "very"
-    classes; the old fixed 0.45/0.55 split made very_negative/very_positive
-    unreachable, so the 5-class output was effectively 3-class.
+    as intensity. Only near-certain calls (score above ~0.975) land in the
+    "very" classes; the old fixed 0.45/0.55 split made them unreachable, so
+    the 5-class output was effectively 3-class. The ramp starts at 0.95
+    because the financial models are poorly calibrated near the top
+    (distilfin emits >0.99 on most positive calls).
     """
     l = (label or "").lower()
     s = float(score if score is not None else 0.0)
     s = min(max(s, 0.0), 1.0)
-    very = min(max((s - 0.85) / 0.15, 0.0), 1.0)
+    very = min(max((s - 0.95) / 0.05, 0.0), 1.0)
     if "negative" in l:
         return normalize_probs([s * very, s * (1.0 - very), 1.0 - s, 0.0, 0.0])
     if "positive" in l:
