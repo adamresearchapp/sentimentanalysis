@@ -130,14 +130,39 @@ TOPIC_DEFINITIONS = {
 }
 
 
-# topic threshold on final hybrid score (0–1)
-TOPIC_THRESHOLD = 0.2
+# Short, natural hypothesis phrasings for zero-shot NLI. The compound display
+# names ("Workforce, Culture & Operations") make poor NLI hypotheses, which
+# starved rare topics of entailment probability.
+TOPIC_NLI_LABELS = {
+    "Corporate Reputation & Public Perception": "the company's public reputation and how it is perceived",
+    "Leadership & Governance": "company executives, board decisions and corporate governance",
+    "Customer Experience & Service Delivery": "customer experience, complaints and service quality",
+    "Products & Offerings": "the company's products, funds and services",
+    "Financial Performance & Market Position": "financial results, profits and market performance",
+    "Regulation & Compliance": "regulators, regulation and compliance",
+    "Strategy & Transformation": "company strategy, restructuring and transformation plans",
+    "Workforce, Culture & Operations": "staff, jobs, pay, workplace culture and day-to-day operations",
+}
+TOPIC_NLI_HYPOTHESIS_TEMPLATE = "This text is about {}."
+
+# Topic threshold on the final hybrid score (0-1 absolute scale, not a
+# probability distribution across topics).
+TOPIC_THRESHOLD = 0.35
 # blending weight between embeddings and NLI
-TOPIC_ALPHA_EMBED = 0.7   # embeddings
-TOPIC_ALPHA_NLI = 0.3     # DeBERTa-MNLI
+TOPIC_ALPHA_EMBED = 0.5   # embeddings
+TOPIC_ALPHA_NLI = 0.5     # DeBERTa-MNLI
+
+# Linear ramp mapping mpnet cosine similarity onto a 0-1 confidence:
+# <= EMBED_SIM_FLOOR maps to 0, >= EMBED_SIM_CEIL maps to 1.
+EMBED_SIM_FLOOR = 0.15
+EMBED_SIM_CEIL = 0.50
+
+# A "None" sentence may only adopt a neighbouring topic when its own hybrid
+# score for that topic is at least this value AND the topic is in its top two.
+NEIGHBOUR_ADOPT_MIN_SCORE = 0.25
 
 LOW_SENTIMENT_CONFIDENCE = 0.30
-LOW_TOPIC_CONFIDENCE = 0.25
+LOW_TOPIC_CONFIDENCE = 0.30
 
 # Top-two hybrid topics closer than this (probability gap) are "borderline" / near a tie.
 TOPIC_NEAR_TIE_MARGIN = 0.08
@@ -181,6 +206,17 @@ def configure_runtime_paths(company_name: str | None = None, raw_dir: str | None
 
     FIGURES_DIR = Path(os.getenv("PRESSCHOICE_FIGURES_DIR", str(ARTICLES_BASE_DIR / "figures")))
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+
+# Keyword nudge so the hand-coded boosts are not one-sided: previously every
+# boost pushed towards Leadership/Financial/Regulation/Customer/Reputation and
+# none towards Workforce, so workforce sentences were systematically stolen.
+WORKFORCE_KEYWORD_PATTERN = re.compile(
+    r"\b(staff|employees?|workforce|headcount|redundanc\w+|lay-?offs?|hiring|"
+    r"recruit\w+|union\w*|strikes?|industrial action|morale|colleagues?|"
+    r"apprentice\w*|pay gap|gender pay|pay rise|working conditions|"
+    r"workplace culture|hybrid working)\b",
+    re.IGNORECASE,
+)
 
 LEADERSHIP_ROLE_PATTERNS = [
     ("CEO", r"\bceo\b"),
@@ -304,13 +340,21 @@ def _safe_hf_call(pipe, text: str):
 
 
 def _map_3way_to_5way(label: str, score: float):
+    """
+    Map a 3-class model output onto 5 classes using the model's confidence
+    as intensity. Confident calls (score above ~0.925) land in the "very"
+    classes; the old fixed 0.45/0.55 split made very_negative/very_positive
+    unreachable, so the 5-class output was effectively 3-class.
+    """
     l = (label or "").lower()
     s = float(score if score is not None else 0.0)
+    s = min(max(s, 0.0), 1.0)
+    very = min(max((s - 0.85) / 0.15, 0.0), 1.0)
     if "negative" in l:
-        return normalize_probs([0.45 * s, 0.55 * s, 0.15, 0.0, 0.0])
+        return normalize_probs([s * very, s * (1.0 - very), 1.0 - s, 0.0, 0.0])
     if "positive" in l:
-        return normalize_probs([0.0, 0.0, 0.15, 0.55 * s, 0.45 * s])
-    return normalize_probs([0.0, 0.2, 0.6 + s * 0.2, 0.2, 0.0])
+        return normalize_probs([0.0, 0.0, 1.0 - s, s * (1.0 - very), s * very])
+    return normalize_probs([0.0, (1.0 - s) / 2.0, s, (1.0 - s) / 2.0, 0.0])
 
 
 def load_sentiment_pipelines():
@@ -557,6 +601,20 @@ def update_sentence_override(
     return False
 
 
+def split_sentences(body: str):
+    """
+    Tokenize per paragraph so headlines and standfirsts (which usually lack a
+    trailing full stop) do not merge into the first body sentence.
+    """
+    sentences = []
+    for para in (body or "").split("\n"):
+        para = para.strip()
+        if not para:
+            continue
+        sentences.extend(s.strip() for s in sent_tokenize(para) if s.strip())
+    return sentences
+
+
 def _read_docx_text(docx_path: Path) -> str:
     try:
         doc = Document(str(docx_path))
@@ -640,7 +698,7 @@ def run_sentiment(master: dict) -> dict:
 
         print(f"Processing article: {article_filename}")
 
-        sents = [s.strip() for s in sent_tokenize(body) if s.strip()]
+        sents = split_sentences(body)
 
         model_probs_article = {m: [] for m in SENTIMENT_MODELS}
         for s in sents:
@@ -754,38 +812,52 @@ def run_topics_hybrid(master: dict, topic_threshold=None, alpha_embed=None, alph
 
     anchor_embeddings = embedder.encode(topic_anchor_texts, show_progress_bar=False)
 
-    topic_embeddings = []
-    for ti in range(len(topic_names)):
-        idxs = [i for i, k in enumerate(topic_anchor_index) if k == ti]
-        vecs = anchor_embeddings[idxs]
-        topic_embeddings.append(np.mean(vecs, axis=0))
-    topic_embeddings = np.vstack(topic_embeddings)
-
     sent_texts = [s["sentence"] for s in sentences]
     sent_embeddings = embedder.encode(sent_texts, show_progress_bar=True)
 
-    sims_matrix = cosine_similarity(sent_embeddings, topic_embeddings)
-    emb_scores = np.apply_along_axis(lambda x: normalize_probs(list(x)), 1, sims_matrix)
+    # Per-topic similarity = best-matching anchor (more discriminative than a
+    # centroid of same-template anchors, which are mutually very similar).
+    anchor_sims = cosine_similarity(sent_embeddings, anchor_embeddings)
+    sims_matrix = np.zeros((len(sentences), len(topic_names)))
+    for ti in range(len(topic_names)):
+        idxs = [i for i, k in enumerate(topic_anchor_index) if k == ti]
+        sims_matrix[:, ti] = anchor_sims[:, idxs].max(axis=1)
+
+    # Keep the scores ABSOLUTE: map cosine similarity onto 0-1 via a fixed
+    # ramp instead of normalising across topics. The old normalisation
+    # flattened every row towards 1/8 and destroyed the margins.
+    emb_scores = np.clip(
+        (sims_matrix - EMBED_SIM_FLOOR) / (EMBED_SIM_CEIL - EMBED_SIM_FLOOR),
+        0.0, 1.0,
+    )
 
     topic_nli = load_topic_nli_pipeline()
-    candidate_labels = topic_names
+    nli_candidate_labels = [TOPIC_NLI_LABELS[t] for t in topic_names]
+    nli_label_to_topic_idx = {lbl: j for j, lbl in enumerate(nli_candidate_labels)}
 
     nli_scores = []
     if verbose:
         print("=== RUNNING DeBERTa-MNLI FOR TOPICS ===")
     for text in sent_texts:
         try:
-            res = topic_nli(text, candidate_labels=candidate_labels, multi_label=False)
+            # multi_label=True yields an independent entailment probability
+            # per topic (absolute 0-1), instead of a softmax across topics
+            # that forces rare topics towards zero.
+            res = topic_nli(
+                text,
+                candidate_labels=nli_candidate_labels,
+                hypothesis_template=TOPIC_NLI_HYPOTHESIS_TEMPLATE,
+                multi_label=True,
+            )
             scores = res.get("scores", [])
             labels = res.get("labels", [])
             score_vec = [0.0] * len(topic_names)
             for label, sc in zip(labels, scores):
-                if label in candidate_labels:
-                    j = candidate_labels.index(label)
+                j = nli_label_to_topic_idx.get(label)
+                if j is not None:
                     score_vec[j] = float(sc)
-            score_vec = normalize_probs(score_vec)
         except Exception:
-            score_vec = [1.0 / len(topic_names)] * len(topic_names)
+            score_vec = [0.0] * len(topic_names)
         nli_scores.append(score_vec)
 
     nli_scores = np.array(nli_scores)
@@ -837,8 +909,13 @@ def run_topics_hybrid(master: dict, topic_threshold=None, alpha_embed=None, alph
             j = topic_names.index("Leadership & Governance")
             ent_boost[j] += 0.08
 
-        row = normalize_probs(list(base_row + ctx_boost + ent_boost))
-        row = np.asarray(row, dtype=float)
+        if WORKFORCE_KEYWORD_PATTERN.search(s["sentence"]):
+            j = topic_names.index("Workforce, Culture & Operations")
+            ent_boost[j] += 0.08
+
+        # Scores stay absolute: add the nudges and clip, but do NOT
+        # renormalise across topics (that flattened the distribution).
+        row = np.clip(base_row + ctx_boost + ent_boost, 0.0, 1.0)
         best_idx = int(np.argmax(row))
         best_score = float(row[best_idx])
         idx_sorted = np.argsort(row)
@@ -876,14 +953,15 @@ def run_topics_hybrid(master: dict, topic_threshold=None, alpha_embed=None, alph
     for s in sentences:
         by_article.setdefault(s["article_id"], []).append(s)
 
+    # Context fallback for unassigned sentences. Unlike the previous version,
+    # a sentence only adopts a neighbouring topic when that topic is one of
+    # its OWN top-two candidates with a competitive score; the old rule
+    # reassigned ~34% of the corpus to whatever big topic surrounded it,
+    # which is how rare topics ended up at zero.
     for aid, slist in by_article.items():
         slist.sort(key=lambda x: x["sentence_index_article"])
         for idx, s in enumerate(slist):
             if s["topic_name"] != "None":
-                continue
-
-            max_score = max(s["topic_scores_hybrid"])
-            if max_score < 0.15:
                 continue
 
             neighbours = []
@@ -893,10 +971,20 @@ def run_topics_hybrid(master: dict, topic_threshold=None, alpha_embed=None, alph
                 neighbours.append(slist[idx + 1])
 
             neighbour_topics = [n["topic_name"] for n in neighbours if n.get("topic_name") not in (None, "None")]
-            if neighbour_topics:
-                cand = Counter(neighbour_topics).most_common(1)[0][0]
+            if not neighbour_topics:
+                continue
+
+            cand = Counter(neighbour_topics).most_common(1)[0][0]
+            cand_idx = topic_names.index(cand)
+            hybrid = np.asarray(s["topic_scores_hybrid"], dtype=float)
+            cand_score = float(hybrid[cand_idx])
+            top_two = set(np.argsort(hybrid)[-2:].tolist())
+
+            if cand_idx in top_two and cand_score >= NEIGHBOUR_ADOPT_MIN_SCORE:
                 s["topic_name"] = cand
-                s["topic_score"] = max_score
+                s["topic_score"] = cand_score
+                s.setdefault("review_reasons", []).append("neighbour_context_assignment")
+                s["needs_review"] = True
                 s = attach_bucket_fields(s)
 
     topic_summary = []
