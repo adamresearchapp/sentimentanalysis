@@ -169,6 +169,25 @@ TOPIC_NEAR_TIE_MARGIN = 0.08
 # Below this margin we attach topic_drift_risk for governance review.
 TOPIC_MARGIN_DRIFT = 0.10
 
+# Boilerplate guard: a sentence must contain at least this many words with
+# letters, otherwise it is bylines/headers/artifacts ("Tara O'Connor",
+# "Targeted support", "Summarise") and is dropped before classification.
+MIN_SUBSTANTIVE_WORDS = 4
+
+# Zero-width and other invisible characters that leak out of docx exports.
+INVISIBLE_CHARS_PATTERN = re.compile(r"[\u200b\u200c\u200d\u2060\ufeff]")
+
+# Focus-company relevance: a sentence counts as being about the focus company
+# if the company (or an alias) is mentioned in the sentence itself or in the
+# preceding FOCUS_RELEVANCE_WINDOW sentences; generic continuation references
+# ("the firm", "the group", "we/our" in quotes) extend the lookback window.
+FOCUS_RELEVANCE_WINDOW = 2
+FOCUS_RELEVANCE_WINDOW_GENERIC = 4
+GENERIC_COMPANY_REFERENCE_PATTERN = re.compile(
+    r"\b(the (firm|company|group|mutual|business|provider|insurer|fund house)|we|our|its)\b",
+    re.IGNORECASE,
+)
+
 
 def normalize_company_name(name: str) -> str:
     if not isinstance(name, str):
@@ -603,18 +622,72 @@ def update_sentence_override(
     return False
 
 
+def _is_substantive_sentence(text: str) -> bool:
+    words_with_letters = [w for w in text.split() if re.search(r"[A-Za-z]", w)]
+    return len(words_with_letters) >= MIN_SUBSTANTIVE_WORDS
+
+
 def split_sentences(body: str):
     """
     Tokenize per paragraph so headlines and standfirsts (which usually lack a
-    trailing full stop) do not merge into the first body sentence.
+    trailing full stop) do not merge into the first body sentence. Drops
+    bylines, section headers, and invisible-character artifacts.
     """
     sentences = []
     for para in (body or "").split("\n"):
-        para = para.strip()
+        para = INVISIBLE_CHARS_PATTERN.sub("", para).strip()
         if not para:
             continue
-        sentences.extend(s.strip() for s in sent_tokenize(para) if s.strip())
+        for s in sent_tokenize(para):
+            s = s.strip()
+            if s and _is_substantive_sentence(s):
+                sentences.append(s)
     return sentences
+
+
+def build_focus_company_pattern(company_name: str, aliases=None):
+    """
+    Regex matching the focus company name or any alias. Extra aliases (e.g.
+    "RLAM" for Royal London) can be supplied via the comma-separated
+    PRESSCHOICE_COMPANY_ALIASES environment variable.
+    """
+    names = [normalize_company_name(company_name)]
+    for a in (aliases or []):
+        a = normalize_company_name(a)
+        if a:
+            names.append(a)
+    env_aliases = os.getenv("PRESSCHOICE_COMPANY_ALIASES", "")
+    for a in env_aliases.split(","):
+        a = normalize_company_name(a)
+        if a:
+            names.append(a)
+    names = [n for n in dict.fromkeys(names) if n]
+    if not names:
+        return None
+    joined = "|".join(re.escape(n) for n in names)
+    return re.compile(rf"\b(?:{joined})\b", re.IGNORECASE)
+
+
+def compute_focus_relevance(sents, focus_pattern):
+    """
+    Per-sentence flags: does the sentence mention the focus company, and is it
+    relevant to the focus company given nearby mentions? Market-context
+    sentences (e.g. gold prices) in otherwise on-topic articles get flagged
+    irrelevant so they stop skewing corpus-level sentiment and topic charts.
+    """
+    n = len(sents)
+    if focus_pattern is None:
+        return [True] * n, [True] * n
+
+    mentions = [bool(focus_pattern.search(s)) for s in sents]
+    relevant = []
+    for i in range(n):
+        window = FOCUS_RELEVANCE_WINDOW
+        if GENERIC_COMPANY_REFERENCE_PATTERN.search(sents[i]):
+            window = FOCUS_RELEVANCE_WINDOW_GENERIC
+        lo = max(0, i - window)
+        relevant.append(any(mentions[lo:i + 1]))
+    return mentions, relevant
 
 
 def _read_docx_text(docx_path: Path) -> str:
@@ -686,9 +759,15 @@ def run_sentiment(master: dict) -> dict:
     pipes = load_sentiment_pipelines()
     prev_by_global_index, prev_by_sentence_key = load_previous_overrides()
 
+    focus_pattern = build_focus_company_pattern(
+        master.get("focus_company", FOCUS_COMPANY_NAME),
+        master.get("focus_company_aliases", []),
+    )
+
     all_sentences = []
     article_weights = {}
     global_counts_5 = Counter()
+    global_counts_5_relevant = Counter()
     sentence_global_index = 0
 
     article_index_map = {a["article_id"]: a.get("article_index", 0) for a in master.get("articles", [])}
@@ -701,6 +780,7 @@ def run_sentiment(master: dict) -> dict:
         print(f"Processing article: {article_filename}")
 
         sents = split_sentences(body)
+        sent_mentions, sent_relevant = compute_focus_relevance(sents, focus_pattern)
 
         model_probs_article = {m: [] for m in SENTIMENT_MODELS}
         for s in sents:
@@ -745,6 +825,8 @@ def run_sentiment(master: dict) -> dict:
                 label_3 = "neutral"
 
             global_counts_5[final_label_5] += 1
+            if sent_relevant[idx]:
+                global_counts_5_relevant[final_label_5] += 1
 
             sentence_record = {
                 "global_index": int(sentence_global_index),
@@ -753,6 +835,8 @@ def run_sentiment(master: dict) -> dict:
                 "article_id": article_id,
                 "article_filename": article_filename,
                 "article_index": article_index_map.get(article_id, 0),
+                "mentions_focus_company": bool(sent_mentions[idx]),
+                "focus_company_relevant": bool(sent_relevant[idx]),
                 "label_5": final_label_5,
                 "label": label_3,
                 "score": float(final_score),
@@ -782,8 +866,22 @@ def run_sentiment(master: dict) -> dict:
 
     master["sentences"] = all_sentences
 
-    total = sum(global_counts_5.values())
-    master["sentiment_5"] = {k: v / total for k, v in global_counts_5.items()} if total > 0 else {}
+    # Headline sentiment distribution covers only sentences relevant to the
+    # focus company; the unfiltered distribution is kept alongside it.
+    total_rel = sum(global_counts_5_relevant.values())
+    total_all = sum(global_counts_5.values())
+    if total_rel > 0:
+        master["sentiment_5"] = {k: v / total_rel for k, v in global_counts_5_relevant.items()}
+    elif total_all > 0:
+        master["sentiment_5"] = {k: v / total_all for k, v in global_counts_5.items()}
+    else:
+        master["sentiment_5"] = {}
+    master["sentiment_5_all"] = {k: v / total_all for k, v in global_counts_5.items()} if total_all > 0 else {}
+    master["focus_relevance_summary"] = {
+        "total_sentences": int(total_all),
+        "focus_relevant_sentences": int(total_rel),
+        "focus_irrelevant_sentences": int(total_all - total_rel),
+    }
     master["article_weights"] = article_weights
     return master
 
@@ -992,19 +1090,29 @@ def run_topics_hybrid(master: dict, topic_threshold=None, alpha_embed=None, alph
     topic_summary = []
     for t in topic_names:
         count = sum(1 for s in sentences if s.get("topic_name") == t)
+        count_rel = sum(
+            1 for s in sentences
+            if s.get("topic_name") == t and s.get("focus_company_relevant", True)
+        )
         definition_text = " ".join(TOPIC_DEFINITIONS[t])
         topic_summary.append({
             "topic_name": t,
             "short_label": get_topic_short_label(t),
             "size": count,
+            "size_focus_relevant": count_rel,
             "definition": definition_text,
         })
 
     none_count = sum(1 for s in sentences if s.get("topic_name") == "None")
+    none_count_rel = sum(
+        1 for s in sentences
+        if s.get("topic_name") == "None" and s.get("focus_company_relevant", True)
+    )
     topic_summary.append({
         "topic_name": "None",
         "short_label": "None",
         "size": none_count,
+        "size_focus_relevant": none_count_rel,
         "definition": "Sentences that do not strongly match any predefined topic.",
     })
 
@@ -1409,7 +1517,7 @@ def plot_sentiment(master: dict):
 
     plt.figure()
     plt.bar(labels, values, color=colors)
-    plt.title("Sentiment Distribution (5-class)")
+    plt.title("Sentiment Distribution (5-class, focus-company relevant)")
     plt.tight_layout()
     out = FIGURES_DIR / "sentiment_master_5class.png"
     plt.savefig(out)
@@ -1425,12 +1533,12 @@ def plot_topic_sizes(master: dict):
         return
 
     labels = [t["topic_name"] for t in topics]
-    sizes = [t["size"] for t in topics]
+    sizes = [t.get("size_focus_relevant", t["size"]) for t in topics]
 
     plt.figure(figsize=(10, 5))
     plt.bar(range(len(labels)), sizes)
     plt.xticks(range(len(labels)), labels, rotation=45, ha="right")
-    plt.title("Topic Sizes")
+    plt.title("Topic Sizes (focus-company relevant)")
     plt.xlabel("Topic")
     plt.ylabel("Number of Sentences")
     plt.tight_layout()
@@ -1450,7 +1558,7 @@ def plot_topic_sentiment_heatmap(master: dict):
     df = pd.DataFrame([
         {"topic": s.get("topic_name"), "sentiment": s.get("label_5")}
         for s in sentences
-        if "topic_name" in s and "label_5" in s
+        if "topic_name" in s and "label_5" in s and s.get("focus_company_relevant", True)
     ])
 
     if df.empty:
@@ -1482,7 +1590,7 @@ def plot_topic_weighted_bars(master: dict):
     df = pd.DataFrame([
         {"topic": s.get("topic_name"), "sentiment": s.get("label_5")}
         for s in sentences
-        if "topic_name" in s and "label_5" in s
+        if "topic_name" in s and "label_5" in s and s.get("focus_company_relevant", True)
     ])
 
     if df.empty:
