@@ -150,4 +150,21 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git commit -m "chore: refresh pipeline outputs"
-          git push
+
+          # The pipeline can run for 15+ minutes; main may advance while it runs.
+          # Rebase onto the latest remote branch before pushing so we don't fail with
+          # a non-fast-forward rejection.
+          BRANCH="${GITHUB_REF_NAME:-main}"
+          for attempt in 1 2 3 4 5; do
+            echo "Syncing with origin/${BRANCH} (attempt ${attempt})..."
+            git pull --rebase origin "${BRANCH}"
+            if git push origin "HEAD:${BRANCH}"; then
+              echo "Push succeeded."
+              exit 0
+            fi
+            echo "Push rejected; another commit landed on ${BRANCH}. Retrying..."
+            sleep 3
+          done
+
+          echo "ERROR: could not push after ${attempt} attempts."
+          exit 1
