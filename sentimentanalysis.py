@@ -196,6 +196,44 @@ def normalize_company_name(name: str) -> str:
     return cleaned
 
 
+def expand_company_aliases(company_name: str, aliases=None) -> list[str]:
+    """
+    Build the list of names used for focus-company matching.
+
+    Compound focus names such as "Phoenix & Standard Life" almost never appear
+    verbatim in journalism; articles say "Phoenix", "Phoenix Group", or
+    "Standard Life". Split on &, /, "and", and commas, keep the full phrase,
+    then append any explicit aliases / PRESSCHOICE_COMPANY_ALIASES.
+    """
+    names: list[str] = []
+    primary = normalize_company_name(company_name)
+    if primary:
+        names.append(primary)
+        # Split compound display names into searchable parts.
+        parts = re.split(r"\s*(?:&|/|,|\band\b)\s*", primary, flags=re.IGNORECASE)
+        for part in parts:
+            part = normalize_company_name(part)
+            if part and part.lower() not in {n.lower() for n in names}:
+                names.append(part)
+
+    for a in (aliases or []):
+        a = normalize_company_name(a)
+        if a and a.lower() not in {n.lower() for n in names}:
+            names.append(a)
+            for part in re.split(r"\s*(?:&|/|,|\band\b)\s*", a, flags=re.IGNORECASE):
+                part = normalize_company_name(part)
+                if part and part.lower() not in {n.lower() for n in names}:
+                    names.append(part)
+
+    env_aliases = os.getenv("PRESSCHOICE_COMPANY_ALIASES", "")
+    for a in env_aliases.split(","):
+        a = normalize_company_name(a)
+        if a and a.lower() not in {n.lower() for n in names}:
+            names.append(a)
+
+    return names
+
+
 def configure_runtime_paths(company_name: str | None = None, raw_dir: str | None = None, master_json: str | None = None) -> None:
     """
     Configure runtime paths before pipeline execution.
@@ -624,7 +662,18 @@ def update_sentence_override(
 
 def _is_substantive_sentence(text: str) -> bool:
     words_with_letters = [w for w in text.split() if re.search(r"[A-Za-z]", w)]
-    return len(words_with_letters) >= MIN_SUBSTANTIVE_WORDS
+    if len(words_with_letters) < MIN_SUBSTANTIVE_WORDS:
+        return False
+    # Newspaper chrome / CMS artifacts that look long enough to pass the
+    # word-count gate but are never company content.
+    chrome = re.compile(
+        r"^(article continues|read our privacy|for free real.?time|"
+        r"i would like to be emailed|summarise|click here to)\b",
+        re.IGNORECASE,
+    )
+    if chrome.search(text.strip()):
+        return False
+    return True
 
 
 def split_sentences(body: str):
@@ -647,23 +696,15 @@ def split_sentences(body: str):
 
 def build_focus_company_pattern(company_name: str, aliases=None):
     """
-    Regex matching the focus company name or any alias. Extra aliases (e.g.
-    "RLAM" for Royal London) can be supplied via the comma-separated
-    PRESSCHOICE_COMPANY_ALIASES environment variable.
+    Regex matching the focus company name or any expanded alias.
+    Prefer longer aliases first so "Phoenix Group" wins over "Phoenix".
+    Extra aliases can also be supplied via PRESSCHOICE_COMPANY_ALIASES.
     """
-    names = [normalize_company_name(company_name)]
-    for a in (aliases or []):
-        a = normalize_company_name(a)
-        if a:
-            names.append(a)
-    env_aliases = os.getenv("PRESSCHOICE_COMPANY_ALIASES", "")
-    for a in env_aliases.split(","):
-        a = normalize_company_name(a)
-        if a:
-            names.append(a)
-    names = [n for n in dict.fromkeys(names) if n]
+    names = expand_company_aliases(company_name, aliases)
     if not names:
         return None
+    # Longest match first avoids partial overlaps stealing the hit.
+    names = sorted(names, key=len, reverse=True)
     joined = "|".join(re.escape(n) for n in names)
     return re.compile(rf"\b(?:{joined})\b", re.IGNORECASE)
 
@@ -736,7 +777,7 @@ def create_master_json(allow_empty_input: bool = False) -> dict:
         "created_at": utc_now_iso(),
         "raw_dir": str(RAW_DIR),
         "focus_company": FOCUS_COMPANY_NAME,
-        "focus_company_aliases": [FOCUS_COMPANY_NAME] if FOCUS_COMPANY_NAME else [],
+        "focus_company_aliases": expand_company_aliases(FOCUS_COMPANY_NAME),
         "article_count": len(articles),
         "articles": articles,
         # Preserve historical annotations until rerun steps update them.
